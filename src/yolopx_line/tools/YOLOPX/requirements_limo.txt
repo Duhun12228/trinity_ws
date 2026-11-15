@@ -1,0 +1,17 @@
+# PyTorch(torch, torchvision)는 GPU/CUDA 버전에 맞춰 따로 설치 (지시서.md 참고)
+numpy<2.6
+opencv-python
+albumentations<2
+yacs
+tensorboardX
+tensorboard
+prefetch_generator
+loguru
+scipy
+matplotlib
+seaborn
+tqdm
+scikit-learn
+imageio
+Pillow
+PyYAML

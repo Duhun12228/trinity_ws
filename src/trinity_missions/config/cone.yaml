@@ -1,0 +1,85 @@
+cone_node:
+  ros__parameters:
+    scan_topic: /scan
+    detections_topic: /yolopx/detections
+    lane_state_topic: /lane_follow/state
+    cmd_topic: /cone_cmd_vel               # master relays this in [cone]
+    state_topic: /mission/cone/state
+    mode_topic: /master/mode
+    debug_topic: /cone/debug_markers       # RViz, fixed frame base_link
+    frame_id: base_link
+
+    # sensor poses in base_link (from /tf_static) and camera intrinsics (camera_info)
+    laser_x: 0.103
+    laser_y: 0.0
+    laser_yaw: 0.0                         # rad
+    camera_x: 0.230
+    camera_y: 0.020
+    camera_fx: 489.424
+    camera_cx: 319.539
+
+    # 1. entry: camera cone N frames AND lidar within enter_dist in the box direction
+    trigger_class: cone
+    trigger_conf: 0.5
+    trigger_frames: 3
+    enter_dist: 0.5                        # m
+    bearing_margin_deg: 2.0                # widen the box bearing range a little
+    request_timeout: 1.0                   # s
+
+    # 2. corridor from the lidar (base_link: x forward, y left); the lidar sees +-60 deg only
+    roi_x_max: 1.2                         # m ahead
+    roi_y_half: 0.8                        # m each side (0.5 cut off a cone row at y -0.6)
+    cluster_gap: 0.08                      # m, neighbouring beams closer than this = same cone
+    cluster_min_points: 2
+    cluster_max_size: 0.25                 # m, bigger clusters are not cones (walls ...)
+    lane_width: 0.50                       # m, corridor width = distance between opposite cones
+                                           #    (measure!); one row only -> path lane_width/2 inside
+    pair_width_tol: 0.15                   # m, opposite pair distance lane_width +- this
+    pair_max_angle_deg: 45.0               # pair line vs perpendicular to the travel direction
+    row_link_max: 0.42                     # m, cones closer than this = same row (cone spacing
+                                           #    in a row < this < lane_width); used without a pair
+    path_alpha: 0.8                        # EMA: new path weight vs previous (1 = no smoothing)
+    fit_order: 2                           # 2: curve through >= 3 cones on a side, 1: lines only
+    max_curvature_coef: 1.5                # |c2| of y = c2 x^2 + ..., above -> use a line instead
+    lost_hold_sec: 0.5                     # s, no cone: keep the last command, then stop
+
+    # 3. drive
+    speed: 0.2                             # m/s
+    lookahead: 0.35                        # m, pure pursuit target, along the path from the
+                                           #    nearest observed point (lidar sees from ~0.3 m)
+                                           #    (shorter: corrects offsets faster, sees bends later)
+    steer_gain: 3.0                        # x pure pursuit omega (bigger = turns harder)
+    ff_gain: 1.0                           # x speed x path curvature at ff_dist (bend feedforward,
+                                           #    needs fit_order 2; bigger = turns into bends harder)
+    ff_dist: 0.5                           # m, where the path curvature is read
+    wheelbase: 0.2                         # m
+    max_steer: 0.6                         # rad
+
+    # 4. backoff: lidar point in front (x < front_x + danger_ahead) within safe_half_width
+    front_x: 0.16                          # m, front bumper in base_link
+    danger_ahead: 0.12                     # m ahead of the bumper
+    safe_half_width: 0.13                  # m, car half width 0.16 + margin 0.05
+    backoff_speed: -0.2                    # m/s
+    backoff_sec: 1.0                       # s
+    backoff_steer_ratio: 0.0              # backoff steering angle = -ratio x the last forward
+                                           #   steering angle (1: same size, opposite side;
+                                           #   0: straight back; negative: retrace the way in)
+    # stuck: stuck_count backoffs within stuck_window -> escape S at max steering, both halves
+    #   turning the nose to escape_first: reverse (wheels to the other side), then forward
+    #   (wheels to that side); next time the other side, alternating while it keeps happening
+    stuck_window: 6.0                      # s
+    stuck_count: 3
+    stuck_reset_sec: 3.0                   # s without a backoff -> start again from escape_first
+    escape_first: right                    # nose direction of the first escape (right / left)
+    escape_sec: 1.0                        # s, escape reverse time (the lidar does not see
+                                           #    behind; 1 s at max steering turns about 40 deg)
+    escape_fwd_sec: 1.0                    # s, forward half of the S (stops early if the danger
+                                           #    box sees something)
+
+    # 5. exit: no lidar cone + no camera cone, and lane state ok for exit_hold_sec
+    #    or (whatever the lane state) for exit_no_cone_sec
+    exit_hold_sec: 1.0                     # s, with the lane back
+    exit_no_cone_sec: 1.0                  # s, without looking at the lane
+    lane_ok_states: [both]                 # /lane_follow/state values counted as "lane back"
+    input_timeout: 0.5                     # s, older inputs count as missing
+    cooldown: 3.0                          # s, no re-entry after leaving [cone]

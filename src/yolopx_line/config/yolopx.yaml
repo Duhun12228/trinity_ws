@@ -1,0 +1,24 @@
+yolopx_node:
+  ros__parameters:
+    # relative path -> resolved under share/yolopx_line/
+    # multiclass + detection engine (tools/export_onnx.py). Roll back to v1:
+    #   engine_path: models/yolopx_480x640_fp16.engine
+    engine_path: models/yolopx_mc_480x640_fp16.engine
+    input_topic: /camera/color/image_raw/compressed
+    overlay_topic: /yolopx/overlay/compressed
+    drivable_mask_topic: /yolopx/drivable_mask      # my lane only (0/255)
+    lane_mask_topic: /yolopx/lane_mask              # lane lines only, no stop line (0/255)
+    stop_line_mask_topic: /yolopx/stop_line_mask    # stop line (0/255)
+    drivable_class_topic: /yolopx/drivable_class    # 0 bg / 1 my lane / 2 left / 3 right
+    detections_topic: /yolopx/detections            # vision_msgs/Detection2DArray
+    # detection class names, in model class-id order (limo_test_2 classes.json)
+    det_classes: [traffic_light_red, traffic_light_yellow, traffic_light_green,
+                  sign_pedestrian, sign_slow, sign_A, sign_B, sign_parking,
+                  cone, road_slow_text, crosswalk]
+    det_conf_thres: 0.3           # objectness * class prob
+    det_iou_thres: 0.45           # per-class NMS
+    overlay_alpha: 0.5
+    jpeg_quality: 80
+    # true: GPU runs frame N while CPU publishes frame N-1 (faster, +1 frame latency)
+    pipelined: true
+    log_period_sec: 5.0

@@ -1,0 +1,78 @@
+lane_follow_node:
+  ros__parameters:
+    debug_pub: true                 # publish /debug_bev or not
+    lane_mask_topic: /yolopx/lane_mask
+    camera_info_topic: /camera/color/camera_info
+    debug_bev_topic: /debug_bev
+    debug_roi_topic: /debug_roi       # BEV lane mask ROI (mono8, no grid)
+    roi_top_ratio: 0.7           # cut this fraction off the top (far side) of the BEV
+    run_rate_hz: 30.0
+    grid_step: 0.1                  # m, grid spacing on /debug_bev
+
+    # IPM mounting geometry (measure cam_height / pitch_deg on the robot!)
+    cam_height: 0.15                # m, floor to lens centre
+    pitch_deg: 10.0                 # tilt down (+ = down)
+    roll_deg: 0.0
+    yaw_deg: 0.0
+    # BEV range
+    x_min: 0.20                     # m, nearest
+    x_max: 1.50                     # m, farthest
+    y_half: 0.60                    # m, half width
+    resolution: 0.005               # m/px
+
+    # Sliding window lane detection (metres, converted to px with `resolution`)
+    debug_sliding_window_topic: /debug/sliding_window
+    occupy_width: 0.20              # m, band taken by the first tracked side
+    window_width: 0.20              # m, window size across the line
+    n_windows: 6                    # window height = ROI height / n, up to 2n windows
+    start_band_height: 0.10         # m, bottom band scanned outward from the centre
+    start_bin_width: 0.05           # m, column bin; first bin with >= min_start_pixels = start
+    min_start_pixels: 20
+    min_window_pixels: 10
+    max_empty_windows: 3
+    dir_blend: 0.5
+    min_fit_pixels: 30
+    min_fit_windows: 2
+    path_step: 0.02                 # m, lane path resampling step
+    path_smooth: 5                  # points in the path moving average
+
+    # Drop lines far from the drivable area (needs the drivable mask of the same frame)
+    lane_max_drivable_dist: 0.10    # m, median distance of the line pixels to drivable
+    drivable_filter_min_ratio: 0.02 # drivable share of the visible ROI to run the filter
+
+    # Lane tracker: single line side decision / virtual partner / lost handling
+    drivable_mask_topic: /yolopx/drivable_mask
+    lane_width: 0.50                # m, virtual partner is shifted this far along the normal
+    side_w_drivable: 1.0            # score weights (positive score = left line)
+    side_w_position: 0.3
+    side_w_continuity: 0.6
+    side_threshold: 0.2             # |total| above this decides, else keep the decision
+    side_switch_frames: 3           # frames in a row to switch the decision
+    drivable_band_min: 0.04         # m, drivable sampling band beside the line
+    drivable_band_max: 0.30
+    drivable_band_step: 0.02
+    drivable_n_points: 8            # sample points along the line
+    position_saturation: 0.20       # m
+    continuity_max_age: 5           # frames
+    track_alpha: 0.8                # new path weight vs previous same-side path
+    center_ema_prev: 0.2           # centre line EMA: weight of the previous centre
+    single_speed_scale: 0.8
+    lost_speed_scale: 0.5
+    lost_stop_frames: 15            # consecutive no-line frames -> stop
+
+    # Stanley control -> /stanley_cmd_vel (master_node owns /cmd_vel)
+    cmd_vel_topic: /stanley_cmd_vel   # master_node relays this to /cmd_vel
+    lane_state_topic: /lane_follow/state   # String: both / single_left / single_right / lost / stop
+    base_speed: 0.4                 # m/s
+    steer_k: 1.0                    # 1/m, cross-track gain
+    yaw_k: 1.8
+    max_steer: 0.6                  # rad
+    steer_smoothing_alpha: 1.0
+    steer_slowdown_ratio: 0.35
+    min_smooth_speed: 0.25          # m/s, slowdown floor (never above the target speed)
+    min_stanley_speed: 0.1          # m/s, floor of v in atan2(k*e, v)
+    wheelbase: 0.2                 # m
+    center_smooth: 0.30             # m, centre path moving average (zigzag/jitter vs corner sharpness)
+    near_span: 0.06                 # m, near heading = path direction over this length
+    lookahead_dist: 0.20            # m, look-ahead heading point along the centre path
+    lookahead_weight: 0.5           # share of the look-ahead heading in yaw

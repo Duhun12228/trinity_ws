@@ -1,0 +1,111 @@
+three_road_node:
+  ros__parameters:
+    drivable_class_topic: /yolopx/drivable_class   # 0 bg / 1 my lane / 2 left / 3 right
+    scan_topic: /scan
+    cmd_topic: /three_road_cmd_vel         # master relays this in [3road]
+    state_topic: /mission/three_road/state
+    mode_topic: /master/mode
+
+    # 1. lane number from the drivable classes (bottom part of the image)
+    #    left + right -> lane 2, right only -> lane 1, left only -> lane 3
+    roi_top_ratio: 0.0                     # use the rows below this fraction of the height
+    side_min_ratio: 0.03                   # side lane pixel share to count it (noise filter)
+    drivable_min_ratio: 0.03               # my lane pixel share to judge at all
+    lane_frames: 3                         # same answer this many frames in a row
+    zone_exit_sec: 2.0                     # s without a side lane -> out of the 3-lane section
+                                           #    (counted from the end of a lane change at least)
+    trigger_side_fresh_sec: 1.0            # s, no lane change unless a side lane was seen this recently
+
+    # direction signs (inside the section): the more often seen one sets the home lane instead
+    # of lane 2 for the rest of the section - sign_A (left arrow) -> 1, sign_B (right) -> 3.
+    # The car goes there at once (blind), dodges objects in it to lane 2 and comes back.
+    detections_topic: /yolopx/detections
+    sign_left_class: sign_A
+    sign_right_class: sign_B
+    sign_conf: 0.5
+    sign_decide_frames: 10                 # frames of the leading sign to decide
+    sign_margin: 5                         # ... and at least this many more than the other one
+    sign_hold_sec: 1.0                     # s, a sign seen this recently (undecided): no return to
+                                           #    lane 2 yet (the home lane may change)
+
+    # 2. lidar triggers (base_link: x forward, y left)
+    laser_x: 0.103
+    laser_y: 0.0
+    laser_yaw: 0.0
+    front_x: 0.16                          # m, front bumper
+    obstacle_dist: 1.0                     # m ahead of the bumper (lane 2 front box)
+    front_half_width: 0.15                 # m
+    obstacle_scans: 3                      # scans in a row
+    side_offset: 0.5                       # m, centre of the neighbouring lane box (= lane width)
+    side_half_width: 0.2                   # m
+    side_x_min: 0.3                        # m, the lidar sees +-60 deg only: boxes start here
+    side_x_max: 1.0
+    side_min_points: 2                     # points in a lane box to call it blocked
+    return_clear_sec: 1.5                  # s, lane 1/3: lane 2 box empty this long -> back to 2
+                                           #    (0.6 m at section_speed 0.2)
+                                           #    (the passed object is beside the car, unseen)
+    center_tol: 0.03                       # m, lane 2 both sides free: object |y| below -> right
+    request_timeout: 1.0                   # s
+
+    # debug image for rqt_image_view (built only while someone subscribes)
+    debug_topic: /three_road/debug
+    debug_rate_hz: 10.0
+    lane_state_topic: /lane_follow/state   # lane_follow tracking state shown on the image
+
+    # alignment: lane number / new section / lane change only while the car is parallel to the
+    # lane (lane_follow centre path heading, near AND ahead) - a corner hides one side lane
+    yaw_topic: /lane_follow/yaw
+    align_max_deg: 10.0                    # deg
+    yaw_timeout: 0.5                       # s, older yaw = not aligned
+    align_pause_max: 5.0                   # s, the section exit timer pauses at most this long
+                                           #    while not aligned
+    verify_extend_max: 3.0                 # s, the result check waits at most this much longer
+                                           #    for aligned frames
+
+    # 3. open-loop lane change, times measured on the track (steering is not symmetric)
+    change_speed: 0.2                      # m/s
+    section_speed: 0.2                     # m/s, lane follow speed cap inside the 3-lane section
+                                           #    (sent to the master as speed_limit)
+
+    # 5. guard (inside the section only): object closer than guard_dist to the LIDAR in the front
+    #    box while moving forward -> back off, turning the car parallel to the lane (w = k * yaw),
+    #    then the triggers run again (an aborted lane change goes through the result check)
+    cmd_vel_topic: /cmd_vel                # to know whether the car is moving forward
+    guard_dist: 0.13                        # m, measured from the lidar (front and the widened side)
+    guard_half_width: 0.15                 # m
+    guard_turn_extra: 0.10                 # m, during a lane change the box reaches this much
+                                           #    further to the side the car moves to
+    guard_min_points: 2
+    guard_scans: 2
+    backoff_speed: -0.2                    # m/s
+    backoff_min_sec: 0.5                   # s
+    backoff_max_sec: 5.0                   # s (the lidar does not see behind)
+    backoff_clear_dist: 0.6               # m from the lidar: clear -> stop backing off
+    # settle after a guard backoff, or after an object ahead during the result check (no
+    # backoff then): stop -> align -> judge the lane standing -> avoid at once
+    settle_sec: 1.0                        # s, hold still first
+    align_done_deg: 5.0                    # near and ahead within this -> parallel
+    align_speed: -0.15                     # m/s, back off while turning parallel
+    align_k: 1.5                           # w = k * yaw [rad] (sign not tested on the car yet)
+    align_max_sec: 3.0                     # s, then judge anyway
+    judge_max_sec: 1.0                     # s, lane_frames in a row within this
+    judge_discard_sec: 0.2                 # s, frames right after the stop are dropped (delay)
+    weak_side_ratio: 0.005                 # none judged by then: last frame with this threshold
+    # right after every lane change: stop and judge standing (still [3road])
+    verify_stop_sec: 0.5                   # s, hold before judging
+    verify_align_skip_deg: 10.0            # near and ahead within this -> no align
+    steer: 0.6                             # rad (bicycle model, driver clamps to its maximum)
+    wheelbase: 0.2                         # m
+    left_turn_sec: 3.0                     # s, to the left
+    left_counter_sec: 3.6                  # s, then to the right
+    right_turn_sec: 3.7                    # s, to the right
+    right_counter_sec: 3.0                 # s, then to the left
+
+    # 4. result check: the remote control can override /cmd_vel at the base, so a lane change
+    #    counts only when the drivable classes show the target lane afterwards
+    verify_settle: 1.0                     # s after the change before judging
+    verify_sec: 1.0                       # s to see the target lane (3 frames in a row)
+    max_retries: 5                         # failed changes in a row, then lane follow only
+                                           #    until the section ends
+
+    cooldown: 1.0                          # s after a lane change before the next trigger

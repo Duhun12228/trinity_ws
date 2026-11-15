@@ -1,0 +1,45 @@
+master_node:
+  ros__parameters:
+    stanley_cmd_topic: /stanley_cmd_vel   # lane_follow_node output
+    cmd_vel_topic: /cmd_vel               # final command (only this node publishes it)
+    mode_topic: /master/mode              # current mode (trinity_msgs/MasterMode, latched)
+    set_mode_topic: /master/set_mode      # manual switch (String): normal/slow/crosswalk/3road/cone/parking
+    run_rate_hz: 30.0
+    cmd_timeout: 0.3                      # s, any cmd older than this counts as missing -> stop
+
+    # Missions (parallel lists, one entry per mission node)
+    missions:             [slow, crosswalk, cone, 3road]
+    mission_state_topics: [/mission/slow/state, /mission/crosswalk/state, /mission/cone/state,
+                           /mission/three_road/state]
+    mission_cmd_topics:   [/slow_cmd_vel, /crosswalk_cmd_vel, /cone_cmd_vel, /three_road_cmd_vel]
+    mission_max_sec:      [8.0, 0.0, 60.0, 60.0]  # s, safety limit in that mode, 0 = none
+                                          # slow: slow_duration 5 s + margin
+                                          # crosswalk: none (waits as long as the light is red)
+                                          # cone: corridor time + margin
+                                          # 3road: one lane change (<= 7 s) + margin
+    preempt_rules: ['crosswalk>slow']     # "A>B": a REQUEST from A interrupts a running B
+    block_rules: ['3road>cone']           # "A>B": no B while A is not IDLE or caps the speed
+                                          #    (3road: inside the 3-lane section)
+    gap_timeout: 0.5                      # s, after entering a mission: /stanley_cmd_vel until its
+                                          #    first cmd, stop if none arrives within this time
+    mission_state_timeout: 1.0            # s, no MissionState for this long -> mission lost
+    mission_idle_grace: 1.0               # s, granted mission still IDLE after this -> back to normal
+
+    # Console dashboard
+    color: true                           # ANSI colours
+    startup_min_sec: 2.0                  # s, measure rates at least this long before SYSTEM CHECK
+    startup_timeout_sec: 20.0             # s, print SYSTEM CHECK anyway after this (engine load etc.)
+    status_period_sec: 10.0               # s, one-line summary period (0 = off)
+    state_hold_sec: 0.5                   # s, a topic state must hold this long to be printed
+
+    # Watched topics, in pipeline order (the hint names the first broken stage).
+    # Add a row to each list to watch another topic.
+    monitor_timeout: 1.0                  # s, no message for this long -> LOST
+    monitor_window: 2.0                   # s, rate measurement window
+    monitor_names:  [camera, yolopx_lane, yolopx_drive, yolopx_det, stanley, lidar]
+    monitor_topics: [/camera/color/image_raw/compressed, /yolopx/lane_mask,
+                     /yolopx/drivable_mask, /yolopx/detections, /stanley_cmd_vel, /scan]
+    monitor_types:  [sensor_msgs/msg/CompressedImage, sensor_msgs/msg/Image,
+                     sensor_msgs/msg/Image, vision_msgs/msg/Detection2DArray,
+                     geometry_msgs/msg/Twist, sensor_msgs/msg/LaserScan]
+    monitor_min_hz: [15.0, 10.0, 10.0, 10.0, 10.0, 7.0]   # below this -> SLOW

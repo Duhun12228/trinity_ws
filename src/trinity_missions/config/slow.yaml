@@ -1,0 +1,37 @@
+slow_node:
+  ros__parameters:
+    detections_topic: /yolopx/detections
+    stop_line_mask_topic: /yolopx/stop_line_mask
+    stanley_cmd_topic: /stanley_cmd_vel
+    cmd_topic: /slow_cmd_vel               # master relays this in [slow]
+    state_topic: /mission/slow/state
+    mode_topic: /master/mode
+
+    # 1. ARMED: slow sign, N frames in a row
+    trigger_classes: [sign_slow]
+    trigger_conf: 0.5
+    trigger_frames: 3
+    arm_timeout: 5.0                       # s since the last SIGN sighting (road text does not extend it)
+
+    # 2. REQUEST (only while ARMED): whichever reaches the reference row first
+    #    a) stop line (close enough, not just visible)
+    stop_line_row_ratio: 0.80              # lowest stop line row >= this * image height
+    stop_line_min_pixels: 200
+    stop_line_frames: 2
+    #    b) road "slow" text box, backup when the stop line is missed
+    road_text_class: road_slow_text
+    road_text_conf: 0.5
+    road_text_row_ratio: 0.80              # box bottom edge >= this * image_height
+    road_text_frames: 2
+    image_height: 480                      # px, detection boxes are in yolopx input pixels
+    request_timeout: 2.0                   # s, drop a request the master did not grant
+
+    # 3./4. [slow]: fixed speed for a fixed time
+    slow_speed: 0.2                        # m/s
+    slow_duration: 5.0                     # s = slow section length / slow_speed + margin (measure!)
+
+    # 5. no re-arming for this long after leaving [slow]
+    cooldown: 3.0                          # s
+    # no slow while [crosswalk] runs (pending ARMED/REQUEST dropped) and this long after it
+    suppress_modes: [crosswalk]
+    suppress_cooldown: 3.0                 # s

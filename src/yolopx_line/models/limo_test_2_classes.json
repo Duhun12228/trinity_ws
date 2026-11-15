@@ -1,0 +1,29 @@
+{
+  "mode": "multiclass",
+  "da_seg": {
+    "background": 0,
+    "drivable": 1,
+    "drivable_left": 2,
+    "drivable_right": 3
+  },
+  "ll_seg": {
+    "background": 0,
+    "lane": 1,
+    "stop_line": 2
+  },
+  "det": {
+    "traffic_light_red": 0,
+    "traffic_light_yellow": 1,
+    "traffic_light_green": 2,
+    "sign_pedestrian": 3,
+    "sign_slow": 4,
+    "sign_A": 5,
+    "sign_B": 6,
+    "sign_parking": 7,
+    "cone": 8,
+    "road_slow_text": 9,
+    "crosswalk": 10
+  },
+  "lane_width": 8,
+  "stopline_width": 8
+}

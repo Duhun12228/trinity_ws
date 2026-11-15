@@ -1,0 +1,21 @@
+# colcon
+build/
+install/
+log/
+Log/
+
+# python
+__pycache__/
+*.pyc
+
+# large binaries: models, engines, recordings, archives
+model_zip/
+src/bags/
+*.engine
+*.onnx
+*.pth
+*.pt
+*.db3
+*.mp4
+*.zip
+src/yolopx_line/backup/
