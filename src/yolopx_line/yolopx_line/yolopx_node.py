@@ -37,7 +37,7 @@ from yolopx_line.trt_infer import YolopxTrt
 
 DET_CLASSES = ['traffic_light_red', 'traffic_light_yellow', 'traffic_light_green',
                'sign_pedestrian', 'sign_slow', 'sign_A', 'sign_B', 'sign_parking',
-               'cone', 'road_slow_text', 'crosswalk']
+               'cone', 'road_slow_text', 'crosswalk', 'zigzag']
 
 # overlay colours (BGR)
 C_MY_LANE = (0, 255, 0)

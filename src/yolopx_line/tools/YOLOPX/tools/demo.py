@@ -42,7 +42,7 @@ transform=transforms.Compose([
 DA_COLORS = {1: (0, 255, 0), 2: (255, 170, 0), 3: (255, 0, 170)}   # 내 차선 초록 / 왼쪽 하늘 / 오른쪽 보라
 LL_COLORS = {1: (0, 0, 255), 2: (204, 0, 255)}                     # lane 빨강 / stop_line 분홍
 DET_COLORS = [(0, 0, 255), (0, 255, 255), (0, 255, 0), (0, 128, 255), (128, 0, 255), (255, 255, 0),
-              (255, 128, 0), (255, 0, 0), (0, 165, 255), (255, 255, 255), (200, 200, 200)]
+              (255, 128, 0), (255, 0, 0), (0, 165, 255), (255, 255, 255), (200, 200, 200), (0, 170, 255)]
 
 
 def draw_result(img, da_mask, ll_mask, alpha=0.5):
@@ -216,7 +216,7 @@ def detect(cfg,opt):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', type=str, default=os.path.join(BASE_DIR, '..', 'weights', 'epoch-95.pth'), help='model.pth path(s)')
+    parser.add_argument('--weights', type=str, default=os.path.join(BASE_DIR, '..', 'weights', 'epoch-90.pth'), help='model.pth path(s)')
     parser.add_argument('--source', type=str, default=os.path.join(BASE_DIR, 'inference', 'image'), help='source')  # file/folder   ex:inference/images
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')

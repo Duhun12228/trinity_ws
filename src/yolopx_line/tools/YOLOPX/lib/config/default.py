@@ -25,11 +25,10 @@ _C.DA_FLIP_SWAP = [2, 3]    # 좌우반전 증강 시 서로 바꿀 주행가능
 _C.DET_CLASSES = [
     'traffic_light_red', 'traffic_light_yellow', 'traffic_light_green',
     'sign_pedestrian', 'sign_slow', 'sign_A', 'sign_B', 'sign_parking',
-    'cone', 'road_slow_text', 'crosswalk',
+    'cone', 'road_slow_text', 'crosswalk', 'zigzag',
 ]
 # [LIMO] 좌우반전하면 안 되는 검출 클래스: 이 박스가 있는 이미지는 좌우반전을 건너뜀
-#   sign_A(좌회전 화살표) / sign_B(우회전 화살표) 는 서로 거울상이라, 반전하면
-#   "오른쪽 화살표인데 라벨은 A" 같은 모순된 정답이 생겨 A/B 를 헷갈리게 됨
+#   sign_A / sign_B 는 서로 거울상이라, 반전하면 모순된 정답이 생겨 A/B 를 헷갈리게 됨
 _C.NO_FLIP_DET_CLASSES = ['sign_A', 'sign_B']
 
 # Cudnn related params

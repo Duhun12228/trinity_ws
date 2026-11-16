@@ -11,10 +11,10 @@ yolopx_node:
     stop_line_mask_topic: /yolopx/stop_line_mask    # stop line (0/255)
     drivable_class_topic: /yolopx/drivable_class    # 0 bg / 1 my lane / 2 left / 3 right
     detections_topic: /yolopx/detections            # vision_msgs/Detection2DArray
-    # detection class names, in model class-id order (limo_test_2 classes.json)
+    # detection class names, in model class-id order (limo_test_3 classes.json)
     det_classes: [traffic_light_red, traffic_light_yellow, traffic_light_green,
                   sign_pedestrian, sign_slow, sign_A, sign_B, sign_parking,
-                  cone, road_slow_text, crosswalk]
+                  cone, road_slow_text, crosswalk, zigzag]
     det_conf_thres: 0.3           # objectness * class prob
     det_iou_thres: 0.45           # per-class NMS
     overlay_alpha: 0.5

@@ -7,11 +7,11 @@ slow_node:
     state_topic: /mission/slow/state
     mode_topic: /master/mode
 
-    # 1. ARMED: slow sign, N frames in a row
-    trigger_classes: [sign_slow]
+    # 1. ARMED: slow sign or the zigzag road marking (limo_test_3), N frames in a row
+    trigger_classes: [sign_slow, zigzag]
     trigger_conf: 0.5
     trigger_frames: 3
-    arm_timeout: 5.0                       # s since the last SIGN sighting (road text does not extend it)
+    arm_timeout: 5.0                       # s since the last sign / zigzag sighting (road text does not extend it)
 
     # 2. REQUEST (only while ARMED): whichever reaches the reference row first
     #    a) stop line (close enough, not just visible)
@@ -28,7 +28,7 @@ slow_node:
 
     # 3./4. [slow]: fixed speed for a fixed time
     slow_speed: 0.2                        # m/s
-    slow_duration: 5.0                     # s = slow section length / slow_speed + margin (measure!)
+    slow_duration: 8.0                     # s = slow section length / slow_speed + margin (measure!)
 
     # 5. no re-arming for this long after leaving [slow]
     cooldown: 3.0                          # s

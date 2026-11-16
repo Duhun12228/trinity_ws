@@ -31,6 +31,7 @@ setup(
             'crosswalk_node = trinity_missions.crosswalk_node:main',
             'cone_node = trinity_missions.cone_node:main',
             'three_road_node = trinity_missions.three_road_node:main',
+            'parking_node = trinity_missions.parking_node:main',
         ],
     },
 )

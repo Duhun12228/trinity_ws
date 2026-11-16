@@ -33,7 +33,10 @@ Running (one step per scan)
             extrapolation into the lidar blind area near the car).
   drive     omega = steer_gain x pure pursuit (path point lookahead ahead, arc length)
                   + ff_gain x speed x path curvature at x = ff_dist (turns into a bend
-                    before the lookahead point reaches it), limited by max_steer
+                    before the lookahead point reaches it), limited by max_steer;
+                  the path followed is the centre line shifted by path_offset (+ left /
+                  - right; the row labelling keeps the unshifted centre), then pushed away
+                  from cones closer than cone_radius + car_half_width (<= cone_push_max)
   backoff   any lidar point in the danger box in front of the car (x < front_x +
             danger_ahead, |y| < safe_half_width): backoff_speed for backoff_sec with the
             steering angle opposite to the last forward command (x backoff_steer_ratio)
@@ -119,6 +122,11 @@ class ConeNode(MissionNode):
         d('ff_dist', 0.5)
         d('wheelbase', 0.2)
         d('max_steer', 0.6)
+        d('path_offset', 0.0)
+        # keep the followed path cone_radius + car_half_width away from every cone
+        d('cone_radius', 0.08)           # m, cones seen as discs of this radius
+        d('car_half_width', 0.11)        # m
+        d('cone_push_max', 0.15)         # m, |push| limit
         # backoff
         d('front_x', 0.16)
         d('danger_ahead', 0.20)
@@ -169,6 +177,10 @@ class ConeNode(MissionNode):
         self.ff_dist = float(p('ff_dist'))
         self.wheelbase = float(p('wheelbase'))
         self.max_steer = float(p('max_steer'))
+        self.path_offset = float(p('path_offset'))
+        self.cone_clear = float(p('cone_radius')) + float(p('car_half_width'))
+        self.cone_push_max = float(p('cone_push_max'))
+        self.cone_push = 0.0         # m, sideways push of the followed path (last, debug)
         self.danger_x = float(p('front_x')) + float(p('danger_ahead'))
         self.safe_half = float(p('safe_half_width'))
         self.backoff_speed = float(p('backoff_speed'))
@@ -496,9 +508,34 @@ class ConeNode(MissionNode):
         i = min(int(np.searchsorted(arc, self.lookahead)), len(xs) - 1)
         return float(xs[i]), float(ys[i])
 
+    def shifted(self, c):
+        """
+        The followed path: the centre line moved sideways by path_offset (+ left), then
+        pushed away from cones closer than cone_radius + car_half_width to it (measured
+        sideways at each cone's x). Cones on the right push it left and the other way round;
+        both sides at once: the difference (narrow gap: as centred as it gets).
+        """
+        c = np.array(c, dtype=float)
+        c[2] += self.path_offset
+        push_left = push_right = 0.0
+        for cx, cy in self.clusters:
+            if cx <= 0.0:
+                continue
+            d = cy - float(np.polyval(c, cx))        # + : cone left of the path
+            if abs(d) < self.cone_clear:
+                need = self.cone_clear - abs(d)
+                if d > 0.0:
+                    push_right = max(push_right, need)
+                else:
+                    push_left = max(push_left, need)
+        push = max(-self.cone_push_max, min(self.cone_push_max, push_left - push_right))
+        self.cone_push = push
+        c[2] += push
+        return c
+
     def pursuit(self, c):
         """Pure pursuit towards the lookahead point + curvature feedforward of the path."""
-        xt, yt = self.target(c)
+        xt, yt = self.target(self.shifted(c))
         w = self.steer_gain * self.speed * 2.0 * yt / (xt * xt + yt * yt)
         xf = min(max(self.ff_dist, self.obs_x[0]), self.obs_x[1])   # observed range only
         slope = 2.0 * c[0] * xf + c[1]
@@ -625,7 +662,7 @@ class ConeNode(MissionNode):
         line.points = [Point(x=float(x), y=float(np.polyval(self.path, x)))
                        for x in np.linspace(0.0, self.roi_x_max, 25)]
         target = marker(2, Marker.SPHERE, (1.0, 0.0, 1.0), 0.05)
-        target.pose.position.x, target.pose.position.y = self.target(self.path)
+        target.pose.position.x, target.pose.position.y = self.target(self.shifted(self.path))
         box = marker(3, Marker.LINE_STRIP, (1.0, 0.0, 0.0), 0.01)
         box.points = [Point(x=0.0, y=self.safe_half), Point(x=self.danger_x, y=self.safe_half),
                       Point(x=self.danger_x, y=-self.safe_half), Point(x=0.0, y=-self.safe_half)]

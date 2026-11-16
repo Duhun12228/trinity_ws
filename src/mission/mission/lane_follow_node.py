@@ -290,7 +290,9 @@ class LaneFollowNode(Node):
                  f'err {st.error * 100:+.1f}cm  yaw {math.degrees(st.yaw):+.1f} '
                  f'(near {math.degrees(st.yaw_near):+.0f} '
                  f'ahead {math.degrees(st.yaw_ahead):+.0f})',
-                 f'steer {math.degrees(st.steer):+.1f}']
+                 f'steer {math.degrees(st.steer):+.1f}',
+                 f'car {abs(st.lateral) * 100:.1f}cm {"right" if st.lateral > 0 else "left"}'
+                 f' of lane centre']
         dist_txt = []
         for side in ('left', 'right'):
             res = lanes[side]
@@ -371,13 +373,15 @@ class LaneFollowNode(Node):
                 self.make_debug_sliding_window(self.lane_roi, lanes, track, ref), msg.header)
 
     def publish_yaw(self):
-        """[near, ahead] heading of the car vs the centre path in degrees; NaN when stanley
-        had no path this frame (lost / stop), so nobody reads a stale angle."""
+        """[near, ahead, centre]: heading of the car vs the centre path in degrees, and the
+        centre path's lateral position from the car in metres (+ = centre is left of the car,
+        i.e. the car is right of the lane centre; without center_offset). NaN when stanley
+        had no path this frame (lost / stop), so nobody reads a stale value."""
         st = self.stanley
         if st.near_pt is None:
-            data = [float('nan'), float('nan')]
+            data = [float('nan')] * 3
         else:
-            data = [math.degrees(st.yaw_near), math.degrees(st.yaw_ahead)]
+            data = [math.degrees(st.yaw_near), math.degrees(st.yaw_ahead), float(st.lateral)]
         self.pub_yaw.publish(Float32MultiArray(data=data))
 
     def destroy_node(self):

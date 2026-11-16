@@ -10,8 +10,8 @@ Cases
   one line    -> decide whether it is the left or right line (decide_side),
                  blend it with the previous path of that side (track_alpha),
                  centre = its candidate; speed x single_speed_scale
-  no line     -> reuse the last centre, speed x lost_speed_scale; after
-                 lost_stop_frames consecutive frames -> stop
+  no line     -> reuse the last centre, speed x lost_speed_scale, for as long as
+                 it lasts (no time limit); stop only when there is no centre yet
 The centre path is then smoothed over frames (EMA, center_ema_prev = weight of
 the previous centre); the history restarts after a stop.
 
@@ -47,7 +47,6 @@ DEFAULT_TRACK_PARAMS = {
     'center_ema_prev': 0.3,         # centre path EMA: weight of the previous centre
     'single_speed_scale': 0.8,
     'lost_speed_scale': 0.5,
-    'lost_stop_frames': 15,
 }
 
 
@@ -125,7 +124,7 @@ class LaneTracker:
         else:
             self.lost_count += 1
             out.lpath, out.rpath = self.prev_l, self.prev_r
-            if self.prev_c is None or self.lost_count >= self.p['lost_stop_frames']:
+            if self.prev_c is None:     # never had a centre: nothing to follow
                 out.status, out.speed_scale = 'stop', 0.0
             else:
                 out.status, out.speed_scale = 'lost', self.p['lost_speed_scale']

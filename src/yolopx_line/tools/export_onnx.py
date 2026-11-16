@@ -10,7 +10,7 @@ Exported graph
 The v1 (2-class, no detection) exporter is kept in tools/v1/.
 
 Usage (tools/YOLOPX must hold the matching multiclass code):
-  python3 tools/export_onnx.py --weights models/epoch-95.pth \
+  python3 tools/export_onnx.py --weights models/epoch-90.pth \
       --output models/yolopx_mc_480x640.onnx [--image some_frame.jpg]
 """
 import argparse
@@ -55,7 +55,7 @@ STD = [0.229, 0.224, 0.225]
 # Jetson, so the config module is not imported; get_net() only needs these three fields.
 DET_CLASSES = ['traffic_light_red', 'traffic_light_yellow', 'traffic_light_green',
                'sign_pedestrian', 'sign_slow', 'sign_A', 'sign_B', 'sign_parking',
-               'cone', 'road_slow_text', 'crosswalk']
+               'cone', 'road_slow_text', 'crosswalk', 'zigzag']   # limo_test_3: + zigzag
 NUM_DA = 4
 NUM_LL = 3
 

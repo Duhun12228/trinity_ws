@@ -19,3 +19,5 @@ src/bags/
 *.mp4
 *.zip
 src/yolopx_line/backup/
+src/trinity_missions/backup/
+*.pdf

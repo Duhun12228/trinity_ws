@@ -3,7 +3,8 @@ Stanley lateral controller on the BEV centre path.
 
   delta = yaw_k * yaw + atan2(steer_k * e, max(v, min_stanley_speed))
   e   = lateral distance [m] from the reference point (vehicle centre at the near
-        edge of the ROI) to the centre path, + = path is left of the car
+        edge of the ROI) to the centre path, + = path is left of the car,
+        plus center_offset: the car follows the centre path shifted by it (+ left / - right)
   yaw = (1 - w) * heading of the path from the nearest point to near_span ahead
         + w * heading lookahead_dist further along the path   (w = lookahead_weight)
         heading + = path turns left. The look-ahead term starts the turn before a
@@ -33,6 +34,7 @@ DEFAULT_STANLEY_PARAMS = {
     'near_span': 0.06,              # m, near heading = direction over this path length
     'lookahead_dist': 0.20,         # m, along the path from the nearest point
     'lookahead_weight': 0.4,        # share of the look-ahead heading in yaw
+    'center_offset': 0.0,           # m, drive this far beside the centre path (+ left / - right)
 }
 
 
@@ -47,6 +49,7 @@ class StanleyController:
         self.yaw_near = 0.0
         self.yaw_ahead = 0.0
         self.error = 0.0
+        self.lateral = 0.0          # m, centre path y from the car (+ = left), no center_offset
         self.steer = 0.0
         self.speed = 0.0
         self.omega = 0.0
@@ -65,7 +68,8 @@ class StanleyController:
         self.yaw_ahead = pth.heading(t_ahead)
         w = self.p['lookahead_weight']
         yaw = (1.0 - w) * self.yaw_near + w * self.yaw_ahead
-        return yaw, pth.signed_lateral(cpath, ref) * resolution
+        self.lateral = pth.signed_lateral(cpath, ref) * resolution
+        return yaw, self.lateral + self.p['center_offset']
 
     def compute(self, cpath, speed_scale, ref, resolution):
         """Return (linear speed, angular velocity). Stops when cpath is None or scale is 0."""

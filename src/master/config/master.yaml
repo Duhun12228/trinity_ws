@@ -8,15 +8,17 @@ master_node:
     cmd_timeout: 0.3                      # s, any cmd older than this counts as missing -> stop
 
     # Missions (parallel lists, one entry per mission node)
-    missions:             [slow, crosswalk, cone, 3road]
+    missions:             [slow, crosswalk, cone, 3road, parking]
     mission_state_topics: [/mission/slow/state, /mission/crosswalk/state, /mission/cone/state,
-                           /mission/three_road/state]
-    mission_cmd_topics:   [/slow_cmd_vel, /crosswalk_cmd_vel, /cone_cmd_vel, /three_road_cmd_vel]
-    mission_max_sec:      [8.0, 0.0, 60.0, 60.0]  # s, safety limit in that mode, 0 = none
+                           /mission/three_road/state, /mission/parking/state]
+    mission_cmd_topics:   [/slow_cmd_vel, /crosswalk_cmd_vel, /cone_cmd_vel, /three_road_cmd_vel,
+                           /parking_cmd_vel]
+    mission_max_sec:      [8.0, 0.0, 60.0, 60.0, 60.0]  # s, safety limit in that mode, 0 = none
                                           # slow: slow_duration 5 s + margin
                                           # crosswalk: none (waits as long as the light is red)
                                           # cone: corridor time + margin
-                                          # 3road: one lane change (<= 7 s) + margin
+                                          # 3road: lane changes + standing checks, retries
+                                          # parking: manoeuvre + hold_sec 30 s + margin
     preempt_rules: ['crosswalk>slow']     # "A>B": a REQUEST from A interrupts a running B
     block_rules: ['3road>cone']           # "A>B": no B while A is not IDLE or caps the speed
                                           #    (3road: inside the 3-lane section)

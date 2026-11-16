@@ -66,6 +66,13 @@ def _nodes(context):
             parameters=[LaunchConfiguration('three_road_params_file')],
         ),
         Node(
+            package='trinity_missions',
+            executable='parking_node',
+            name='parking_node',
+            output=other_output,
+            parameters=[LaunchConfiguration('parking_params_file')],
+        ),
+        Node(
             package='master',
             executable='master_node',
             name='master_node',
@@ -113,6 +120,10 @@ def generate_launch_description():
             'three_road_params_file',
             default_value=os.path.join(missions_share, 'config', 'three_road.yaml'),
             description='three_road_node YAML parameter file'),
+        DeclareLaunchArgument(
+            'parking_params_file',
+            default_value=os.path.join(missions_share, 'config', 'parking.yaml'),
+            description='parking_node YAML parameter file'),
         DeclareLaunchArgument('input_topic', default_value='/camera/color/image_raw/compressed',
                               description='yolopx CompressedImage input topic'),
         OpaqueFunction(function=_nodes),

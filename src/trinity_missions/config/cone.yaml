@@ -45,7 +45,7 @@ cone_node:
 
     # 3. drive
     speed: 0.2                             # m/s
-    lookahead: 0.35                        # m, pure pursuit target, along the path from the
+    lookahead: 0.3                        # m, pure pursuit target, along the path from the
                                            #    nearest observed point (lidar sees from ~0.3 m)
                                            #    (shorter: corrects offsets faster, sees bends later)
     steer_gain: 3.0                        # x pure pursuit omega (bigger = turns harder)
@@ -53,7 +53,14 @@ cone_node:
                                            #    needs fit_order 2; bigger = turns into bends harder)
     ff_dist: 0.5                           # m, where the path curvature is read
     wheelbase: 0.2                         # m
-    max_steer: 0.6                         # rad
+    max_steer: 0.983                       # rad: w = 1.5 at 0.2 m/s, full steering (limit lifted)
+    path_offset: -0.2                     # m, the followed path = cone centre line shifted sideways
+                                           # (+ left / - right); -0.03 = 3 cm to the right
+    # cones as discs: the followed path stays cone_radius + car_half_width away from every cone
+    # (pushed sideways at the cone's x; narrow gaps: as centred as it gets)
+    cone_radius: 0.08                      # m (bigger = keeps more distance from the cones)
+    car_half_width: 0.11                   # m
+    cone_push_max: 0.15                    # m, |push| limit
 
     # 4. backoff: lidar point in front (x < front_x + danger_ahead) within safe_half_width
     front_x: 0.16                          # m, front bumper in base_link

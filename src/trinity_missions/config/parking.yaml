@@ -1,0 +1,38 @@
+parking_node:
+  ros__parameters:
+    detections_topic: /yolopx/detections
+    stop_line_mask_topic: /yolopx/stop_line_mask
+    stanley_cmd_topic: /stanley_cmd_vel
+    cmd_topic: /parking_cmd_vel            # master relays this in [parking]
+    state_topic: /mission/parking/state
+    mode_topic: /master/mode
+
+    # trigger: parking sign -> ARMED, then the stop line at the reference row -> [parking]
+    trigger_class: sign_parking
+    trigger_conf: 0.5
+    trigger_frames: 3
+    trigger_min_area: 800.0                # px^2 (box w*h, 640x480 input): seen from far away is
+                                           # ignored; measure the box at the wanted arming spot
+    arm_timeout: 10.0                      # s without the stop line after the last sign -> IDLE
+    stop_line_row_ratio: 0.80              # measure: lowest stop line row when the car is at the
+                                           # start point of the manoeuvre
+    stop_line_min_pixels: 200
+    stop_line_frames: 2
+    request_timeout: 1.0
+
+    # manoeuvre (open loop, times measured on the track; test with
+    #   ros2 topic pub --once /master/set_mode std_msgs/String "data: parking")
+    # target slot: centre 1246 mm past the stop line, 569 mm right of the lane centre.
+    # Placeholder from the 3road measurement (right yaw ~0.19 rad/s at 0.2 m/s -> radius
+    # ~1.05 m): a full 90 deg would overshoot into the lower row, ~60 deg ends inside the slot.
+    speed: 0.2                             # m/s, all steps
+    straight_lane_follow: true             # straight: lane follow (true) or w = 0 (false)
+    straight_sec: 4.3                      # s, from the trigger to the start of the turn
+    turn_side: right
+    steer: 0.983                           # rad, full steering: w = 1.5 at 0.2 m/s (same as 3road)
+    wheelbase: 0.2
+    turn_sec: 5.3                          # s at full steering
+    in_sec: 0.0                            # s straight after the turn (0 = skip)
+    hold_sec: 30.0                         # s parked, then back to normal
+
+    cooldown: 5.0                          # s, no re-trigger after leaving [parking]

@@ -1,76 +1,52 @@
 """
-3-lane (3road) mission node: lane changes in the 3-lane section, always back to lane 2.
+3-lane (3road) mission node, v2 (simple loop). Mode '3road', topics 'three_road'.
 
-Mode name '3road'; topics use 'three_road' (ROS names cannot start with a digit).
-
-Lane number (only while not changing lanes)
-  /yolopx/drivable_class (0 bg / 1 my lane / 2 left / 3 right), bottom part of the image
-  (rows below roi_top_ratio): a side lane counts when its pixel share >= side_min_ratio.
-    left + right -> lane 2,  right only -> lane 1,  left only -> lane 3
-  The same answer lane_frames frames in a row sets the lane.
-Trigger (always on)
-  IDLE  -> ARMED    a lane number was set (side lane seen: 3-lane section)
-  ARMED -> IDLE     no side lane for zone_exit_sec
-  ARMED -> REQUEST  from the lidar (/scan, base_link: x forward, y left):
-    lane 2: an object in the front box (bumper .. bumper + obstacle_dist, |y| <
-            front_half_width) for obstacle_scans scans -> the side whose lane box is
-            empty; both empty: away from the object (y >= 0 -> right), y ~ 0 -> right;
-            both blocked: wait
-    lane 1: the right lane box (y = -side_offset) empty for return_clear_sec -> right
-    lane 3: the left lane box (y = +side_offset) empty for return_clear_sec -> left
-    lane boxes: side_x_min < x < side_x_max (the lidar sees +-60 deg only),
-                |y -+ side_offset| < side_half_width
-  REQUEST -> IDLE   not granted within request_timeout
-Guard (inside the section): an object closer than guard_dist to the LIDAR in the front box
-  (+-guard_half_width) for guard_scans scans while moving forward -> back off straight at
-  backoff_speed for backoff_min..max s, until nothing within backoff_clear_dist. ARMED: requests
-  [3road] for it; during a lane change the change is aborted. During a lane change the guard
-  box reaches guard_turn_extra further to the side the car moves to (front corner sweep).
-Settle (still in [3road]): right after every lane change (VERIFY), after a guard backoff
-  (GUARD), after an object ahead during a moving result check (RECHECK). An object closer than
-  backoff_clear_dist to the lidar when it starts: back off straight first (room to get past).
-    stop    hold still settle_sec, VERIFY verify_stop_sec (camera / lane_follow path settle)
-    align   not parallel (near / ahead > align_done_deg, VERIFY: > verify_align_skip_deg):
-            back off at align_speed with
-            w = align_k * yaw until parallel, at most align_max_sec (unknown yaw: skipped)
-    judge   standing: the same lane lane_frames frames in a row (frames older than
-            judge_discard_sec after the stop are dropped); none within judge_max_sec: the
-            last frame with the weak side threshold weak_side_ratio; none: the lane known
-  GUARD / RECHECK, then at once (turn / counter): not in the home lane -> one lane towards
-  it; in it -> dodge (home 2: the free side, home 1 / 3: lane 2). Nothing possible -> DONE.
-  A recheck that finds the original lane counts as a failed change (retry).
-  VERIFY: target lane -> ok, DONE (lane follow), or with an object in the front box -> avoid
-  at once; original lane -> the same change again at once (retry, max_retries); nothing
-  judged -> DONE and the moving result check below.
-Direction signs: inside the section sign_A / sign_B frames (score >= sign_conf) are counted;
-  once one has >= sign_decide_frames and leads by >= sign_margin, the home lane becomes 1 (A)
-  or 3 (B) instead of 2 for the rest of the section: the car moves there at once (blind, one
-  lane at a time), dodges objects in it to lane 2 and comes back when the home lane box has
-  been clear for return_clear_sec. While signs are being counted (one seen within
-  sign_hold_sec, undecided) the return to lane 2 waits, so it does not go the wrong way.
-Alignment: the lane number is judged, new sections entered and lane changes requested only
-  while lane_follow's centre path heading (/lane_follow/yaw, near and ahead) is within
-  +-align_max_deg (a corner hides one side lane -> wrong lane number). While not aligned the
-  lane and its frame count are kept, the section exit timer pauses (at most align_pause_max)
-  and the result check waits (at most verify_extend_max longer).
-Running [3road]: open-loop lane change at change_speed with steer (bicycle model
-  w = v tan(steer) / wheelbase), times measured on the track per direction (the steering
-  is not symmetric):
-    turn     steer to the target side for <dir>_turn_sec
-    counter  steer to the other side for <dir>_counter_sec
-  then the standing check (settle, VERIFY); after DONE the master goes back to normal,
-  lane_follow resets its tracking (it watches /master/mode) and centres the car in the lane.
-Moving result check (fallback when nothing was judged standing; the LIMO remote control can
-  override /cmd_vel at the base): after DONE the lane is not assumed. After verify_settle
-  the stable lane of the next verify_sec decides:
-  target -> ok; the original lane (or none by the end) -> failed: back to ARMED at once (no
-  cooldown) so the trigger runs again; after max_retries failures in a row no more lane
-  changes (lane follow only) until the section ends.
-Speed: inside the section (ARMED / REQUEST / lane known / checking) the MissionState
-  carries speed_limit = section_speed, so the master caps lane follow at it in normal mode.
-Debug: /three_road/debug (bgr8 image for rqt_image_view, only while subscribed): drivable
-  classes with the lane shares and lane number, lidar top view with the front / lane boxes
-  and the return timer, mission state and the lane_follow tracking state.
+1. Lane number: only while the car is parallel to the lane (lane_follow /lane_follow/yaw
+   near AND ahead within align_max_deg) and not changing lanes. /yolopx/drivable_class
+   pixel counts (rows below roi_top_ratio): a side lane counts with >= side_min_pixels.
+     left + right -> 2,  right only -> 1,  left only -> 3;  lane_frames frames in a row.
+   Inside the section a jump 1 <-> 3 without a lane change is ignored (misread).
+2. Section: entered when lane 2 is judged (all three lanes seen) -> ARMED; the master caps
+   lane follow at section_speed (speed_limit). Over after no side lane for zone_exit_sec.
+3. Obstacles per lane (lidar, base_link x forward / y left):
+     my lane     : front box (|y| < front_half_width, up to dodge_dist2 from the lidar),
+                   obstacle_scans scans in a row; the nearest point decides: a dodge that
+                   ends one lane away needs it closer than dodge_dist, two lanes away
+                   closer than dodge_dist2 (else my lane counts as free)
+     next lanes  : lane boxes side_x_min..side_x_max along the lane (rotated by the lane
+                   heading /lane_follow/yaw[0] when <= align_trust_deg), centred on the lane
+                   centre (/lane_follow/yaw[2]) +- side_offset, >= side_min_points points
+     lanes not seen (two lanes away) count as free (three blocked lanes do not happen)
+4. Decision loop (ARMED, parallel, lane known), home lane = 2 (or 1 / 3 from the signs):
+     my lane blocked         -> the free lane nearest to home (lane 2 with both free and home
+                                2: away from the object, y ~ 0 -> right); two lanes at once
+                                if needed
+     my lane free, not home  -> home when the lanes on the way and home are free (1 -> 3 at
+                                once when lane 2 is free), else stay
+     else                    -> stay
+5. Signs: sign_A / sign_B frames inside the section; once both together reach
+   sign_decide_frames, the one seen more often sets home (A -> 1, B -> 3) for the section.
+6. Lane change ([3road], the same for every change):
+     pre_stop  hold pre_stop_sec, decide again (step 4; DONE when nothing to do), then the
+               object ahead: closer to the lidar than backoff_clear_dist (one lane) /
+               backoff_clear_dist2 (two lanes) -> back off straight until it is not, hold
+               again, decide again; else start. The checks are shorter than the dodge
+               distances, so a backed-off object still counts as ahead (no loop)
+     turn / (mid) / counter   open loop, measured times (one or two lanes); turn AND counter
+               get turn_bias_k x the sideways offset from the lane centre averaged over
+               pre_stop (toward the target side: shorter, away: longer; <= turn_bias_max),
+               the same time on both so the car still ends parallel; a two-lane change
+               biases only mid instead (mid_bias_k, <= mid_bias_max)
+     post_stop hold post_stop_sec, then judge standing
+     judge     parallel frames only: lane_frames in a row -> lane set, decide again at once
+               (next change, or DONE); my lane only -> lane unknown, DONE; nothing within
+               judge_max_sec -> lane unknown, DONE (lane follow straightens the car and the
+               normal judgement sets the lane)
+7. Guard (last resort): an object closer than guard_dist to the lidar while moving forward.
+     ARMED / in the section -> [3road]: back off straight, then pre_stop (decide again)
+     during turn / mid / counter -> abort, back off straight, then align (back off with
+               w = align_k * yaw while |yaw| <= align_trust_deg, until align_done_deg or
+               align_max_sec), judge standing; not judged -> the lane before the change
 """
 from array import array
 import math
@@ -80,6 +56,7 @@ import cv2
 from geometry_msgs.msg import Twist
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Float32MultiArray, String
@@ -88,11 +65,9 @@ from vision_msgs.msg import Detection2DArray
 
 from trinity_missions.mission_base import MissionNode
 
-TURN, COUNTER, BACKOFF = 'turn', 'counter', 'backoff'
-STOP, ALIGN, JUDGE = 'stop', 'align', 'judge'   # settle steps before avoiding
-GUARD = 'guard'                   # request kind: safety backoff instead of a lane change
-RECHECK = 'recheck'               # request kind: stop, align, judge the lane, then avoid
-VERIFY = 'verify'                 # settle origin: right after a lane change (result check)
+PRE_STOP, BACKOFF, TURN, MID, COUNTER = 'pre_stop', 'backoff', 'turn', 'mid', 'counter'
+POST_STOP, ALIGN, JUDGE = 'post_stop', 'align', 'judge'
+GUARD = 'guard'                   # request kind: guard backoff
 LEFT, RIGHT = 'left', 'right'
 
 
@@ -108,215 +83,233 @@ class ThreeRoadNode(MissionNode):
         d('drivable_class_topic', '/yolopx/drivable_class')
         d('scan_topic', '/scan')
         d('cmd_topic', '/three_road_cmd_vel')
-        # lane number
-        d('roi_top_ratio', 0.5)
-        d('side_min_ratio', 0.03)
-        d('drivable_min_ratio', 0.03)
-        d('lane_frames', 3)
-        d('zone_exit_sec', 2.0)
-        d('trigger_side_fresh_sec', 1.0)
-        # direction signs: the more often seen one (with a margin) sets the home lane (instead
-        # of lane 2) for the rest of the section: sign_A (left) -> 1, sign_B (right) -> 3
+        d('cmd_vel_topic', '/cmd_vel')
         d('detections_topic', '/yolopx/detections')
-        d('sign_left_class', 'sign_A')
-        d('sign_right_class', 'sign_B')
-        d('sign_conf', 0.5)
-        d('sign_decide_frames', 10)
-        d('sign_margin', 5)
-        d('sign_hold_sec', 1.0)
-        # lidar
+        d('yaw_topic', '/lane_follow/yaw')
+        d('lane_state_topic', '/lane_follow/state')
+        d('debug_topic', '/three_road/debug')
+        d('debug_rate_hz', 10.0)
+        # 1./2. lane number, section
+        d('roi_top_ratio', 0.0)
+        d('side_min_pixels', 1500)
+        d('drivable_min_pixels', 9000)
+        d('lane_frames', 3)
+        d('align_max_deg', 10.0)
+        d('yaw_timeout', 0.5)
+        d('entry_lane2_only', True)
+        d('reenter_grace_sec', 0.0)
+        d('zone_exit_sec', 4.0)
+        d('align_pause_max', 5.0)
+        d('section_speed', 0.2)
+        # 3. lidar
         d('laser_x', 0.103)
         d('laser_y', 0.0)
         d('laser_yaw', 0.0)
         d('front_x', 0.16)
-        d('obstacle_dist', 0.8)
+        d('dodge_dist', 0.7)             # m from the lidar: my lane blocked -> one-lane dodge
+        d('dodge_dist2', 0.8)            # ... -> two-lane dodge
         d('front_half_width', 0.15)
         d('obstacle_scans', 3)
         d('side_offset', 0.5)
         d('side_half_width', 0.2)
         d('side_x_min', 0.3)
-        d('side_x_max', 1.0)
+        d('side_x_max', 1.5)
         d('side_min_points', 2)
-        d('return_clear_sec', 1.5)
+        d('box_follow_lane', True)
+        d('box_shift_max', 0.25)
         d('center_tol', 0.03)
         d('request_timeout', 1.0)
-        # debug image for rqt_image_view (built only while someone subscribes)
-        d('debug_topic', '/three_road/debug')
-        d('debug_rate_hz', 10.0)
-        d('lane_state_topic', '/lane_follow/state')
-        # alignment: lane judgement / triggers only while the car is parallel to the lane
-        d('yaw_topic', '/lane_follow/yaw')
-        d('align_max_deg', 10.0)
-        d('yaw_timeout', 0.5)
-        d('align_pause_max', 5.0)
-        d('verify_extend_max', 3.0)
-        # lane change
+        # 5. signs
+        d('sign_left_class', 'sign_A')
+        d('sign_right_class', 'sign_B')
+        d('sign_conf', 0.5)
+        d('sign_decide_frames', 20)
+        # 6. lane change
         d('change_speed', 0.2)
-        d('section_speed', 0.2)
-        # guard (inside the section only): an object closer than guard_dist to the LIDAR in
-        # the front box while moving forward -> back off, steering the car parallel to the lane
-        d('cmd_vel_topic', '/cmd_vel')
-        d('guard_dist', 0.2)
+        d('steer', 0.983)
+        d('wheelbase', 0.2)
+        d('left_turn_sec', 2.4)
+        d('left_counter_sec', 3.0)
+        d('right_turn_sec', 3.1)
+        d('right_counter_sec', 2.9)
+        d('left2_turn_sec', 2.4)
+        d('left2_mid_sec', 3.0)
+        d('left2_counter_sec', 3.0)
+        d('right2_turn_sec', 3.1)
+        d('right2_mid_sec', 2.7)
+        d('right2_counter_sec', 3.0)
+        d('pre_stop_sec', 0.5)
+        # turn time bias from the lane centre offset measured during pre_stop
+        d('turn_bias_k', 2.0)            # s per m of extra sideways travel
+        d('turn_bias_max', 0.5)          # s, |bias| limit
+        d('mid_bias_k', 6.5)             # two-lane change: s of mid per m (0.2 m/s x sin 50 deg)
+        d('mid_bias_max', 0.8)           # s
+        d('post_stop_sec', 0.5)
+        d('judge_max_sec', 1.0)
+        d('judge_discard_sec', 0.2)
+        d('backoff_speed', -0.2)
+        d('backoff_min_sec', 0.5)
+        d('backoff_max_sec', 5.0)
+        d('backoff_clear_dist', 0.6)     # one-lane change: closer -> back off to this
+        d('backoff_clear_dist2', 0.75)   # two-lane change
+        # 7. guard / align
+        d('guard_dist', 0.13)
         d('guard_half_width', 0.15)
         d('guard_turn_extra', 0.10)
         d('guard_min_points', 2)
         d('guard_scans', 2)
-        d('backoff_speed', -0.2)
-        d('backoff_min_sec', 0.5)
-        d('backoff_max_sec', 1.5)
-        d('backoff_clear_dist', 0.35)
-        # settle after a backoff / a recheck: stop, align, judge the lane, then avoid
-        d('settle_sec', 1.0)
         d('align_done_deg', 5.0)
+        d('align_trust_deg', 30.0)
         d('align_speed', -0.15)
         d('align_k', 1.5)
         d('align_max_sec', 3.0)
-        d('judge_max_sec', 1.0)
-        d('judge_discard_sec', 0.2)
-        d('weak_side_ratio', 0.005)
-        # result check right after a lane change: stop and judge standing (shorter hold, align
-        # only when not even judge-parallel)
-        d('verify_stop_sec', 0.5)
-        d('verify_align_skip_deg', 10.0)
-        # result check: the remote control can override /cmd_vel at the base, so a lane
-        # change is only trusted once the drivable classes show the target lane
-        d('verify_settle', 1.0)
-        d('verify_sec', 2.0)
-        d('max_retries', 5)
-        d('steer', 0.6)
-        d('wheelbase', 0.2)
-        d('left_turn_sec', 3.0)
-        d('left_counter_sec', 3.6)
-        d('right_turn_sec', 3.7)
-        d('right_counter_sec', 3.0)
 
         p = lambda name: self.get_parameter(name).value  # noqa: E731
+        self.debug_period = 1.0 / max(float(p('debug_rate_hz')), 0.1)
         self.roi_top = float(p('roi_top_ratio'))
-        self.side_min = float(p('side_min_ratio'))
-        self.drivable_min = float(p('drivable_min_ratio'))
+        self.side_min = int(p('side_min_pixels'))
+        self.drivable_min = int(p('drivable_min_pixels'))
         self.lane_frames = int(p('lane_frames'))
+        self.align_max = float(p('align_max_deg'))
+        self.yaw_timeout = float(p('yaw_timeout'))
+        self.entry_lane2_only = bool(p('entry_lane2_only'))
+        self.reenter_grace = float(p('reenter_grace_sec'))
         self.zone_exit = float(p('zone_exit_sec'))
-        self.side_fresh = float(p('trigger_side_fresh_sec'))
-        self.sign_classes = {p('sign_left_class'): 1, p('sign_right_class'): 3}
-        self.sign_conf = float(p('sign_conf'))
-        self.sign_decide = int(p('sign_decide_frames'))
-        self.sign_margin = int(p('sign_margin'))
-        self.sign_hold = float(p('sign_hold_sec'))
+        self.align_pause_max = float(p('align_pause_max'))
+        self.section_speed = float(p('section_speed'))
         self.laser = (float(p('laser_x')), float(p('laser_y')), float(p('laser_yaw')))
         self.front_x = float(p('front_x'))
-        self.obstacle_dist = float(p('obstacle_dist'))
+        self.dodge = float(p('dodge_dist'))
+        self.dodge2 = float(p('dodge_dist2'))
         self.front_half = float(p('front_half_width'))
         self.obstacle_scans = int(p('obstacle_scans'))
         self.side_offset = float(p('side_offset'))
         self.side_half = float(p('side_half_width'))
         self.side_x = (float(p('side_x_min')), float(p('side_x_max')))
         self.side_min_points = int(p('side_min_points'))
-        self.return_clear = float(p('return_clear_sec'))
+        self.box_follow_lane = bool(p('box_follow_lane'))
+        self.box_shift_max = float(p('box_shift_max'))
         self.center_tol = float(p('center_tol'))
         self.request_timeout = float(p('request_timeout'))
-        self.debug_period = 1.0 / max(float(p('debug_rate_hz')), 0.1)
-        self.align_max = float(p('align_max_deg'))
-        self.yaw_timeout = float(p('yaw_timeout'))
-        self.align_pause_max = float(p('align_pause_max'))
-        self.verify_extend_max = float(p('verify_extend_max'))
-        self.guard_dist = float(p('guard_dist'))
-        self.guard_half = float(p('guard_half_width'))
-        self.guard_turn_extra = float(p('guard_turn_extra'))
-        self.guard_y = (-self.guard_half, self.guard_half)  # current guard box y range
-        self.guard_min_points = int(p('guard_min_points'))
-        self.guard_scans = int(p('guard_scans'))
+        self.sign_classes = {p('sign_left_class'): 1, p('sign_right_class'): 3}
+        self.sign_conf = float(p('sign_conf'))
+        self.sign_decide = int(p('sign_decide_frames'))
+        self.speed = float(p('change_speed'))
+        self.w = self.speed * math.tan(float(p('steer'))) / float(p('wheelbase'))
+        self.times = {LEFT: (float(p('left_turn_sec')), float(p('left_counter_sec'))),
+                      RIGHT: (float(p('right_turn_sec')), float(p('right_counter_sec')))}
+        self.times2 = {sd: tuple(float(p(f'{sd}2_{k}_sec')) for k in ('turn', 'mid', 'counter'))
+                       for sd in (LEFT, RIGHT)}
+        self.pre_stop = float(p('pre_stop_sec'))
+        self.turn_bias_k = float(p('turn_bias_k'))
+        self.turn_bias_max = float(p('turn_bias_max'))
+        self.mid_bias_k = float(p('mid_bias_k'))
+        self.mid_bias_max = float(p('mid_bias_max'))
+        self.centre_samples = []     # lane centre y during pre_stop (turn bias)
+        self.post_stop = float(p('post_stop_sec'))
+        self.judge_max = float(p('judge_max_sec'))
+        self.judge_discard = float(p('judge_discard_sec'))
         self.backoff_speed = float(p('backoff_speed'))
         self.backoff_min = float(p('backoff_min_sec'))
         self.backoff_max = float(p('backoff_max_sec'))
         self.backoff_clear = float(p('backoff_clear_dist'))
-        self.settle_sec = float(p('settle_sec'))
+        self.backoff_clear2 = float(p('backoff_clear_dist2'))
+        self.backoff_need = self.backoff_clear   # clearance the running backoff aims for
+        self.guard_dist = float(p('guard_dist'))
+        self.guard_half = float(p('guard_half_width'))
+        self.guard_turn_extra = float(p('guard_turn_extra'))
+        self.guard_min_points = int(p('guard_min_points'))
+        self.guard_scans = int(p('guard_scans'))
         self.align_done = float(p('align_done_deg'))
+        self.align_trust = float(p('align_trust_deg'))
         self.align_speed = float(p('align_speed'))
         self.align_k = float(p('align_k'))
         self.align_max_sec = float(p('align_max_sec'))
-        self.judge_max = float(p('judge_max_sec'))
-        self.judge_discard = float(p('judge_discard_sec'))
-        self.weak_side = float(p('weak_side_ratio'))
-        self.verify_stop = float(p('verify_stop_sec'))
-        self.verify_align_skip = float(p('verify_align_skip_deg'))
         self.align_w_max = abs(self.align_speed) * math.tan(float(p('steer'))) / \
             float(p('wheelbase'))
-        self.speed = float(p('change_speed'))
-        self.section_speed = float(p('section_speed'))
-        self.verify_settle = float(p('verify_settle'))
-        self.verify_sec = float(p('verify_sec'))
-        self.max_retries = int(p('max_retries'))
-        self.w = self.speed * math.tan(float(p('steer'))) / float(p('wheelbase'))
-        self.times = {LEFT: (float(p('left_turn_sec')), float(p('left_counter_sec'))),
-                      RIGHT: (float(p('right_turn_sec')), float(p('right_counter_sec')))}
 
-        self.lane = None             # current lane number 1 / 2 / 3, None outside the section
+        # section / lane
+        self.lane = None             # 1 / 2 / 3, None outside the section or while unknown
+        self.lane_unknown = False    # inside the section, lane lost: wait for a judgement
         self.cand, self.cand_count = None, 0
-        self.side_seen_at = None     # s, last frame with a side lane (only when really seen)
-        # s, end of the last lane change: the section exit timer starts no earlier than this
-        self.zone_grace_from = None
-        self.obstacle_count = 0
-        self.side_clear_since = {LEFT: None, RIGHT: None}
-        self.side_blocked = {LEFT: False, RIGHT: False}
-        self.request = None          # (direction, target lane) of the pending / running change
-        self.request_at = None
-        self.phase_until = None      # s, end of the current turn / counter step
-        self.verify = None           # pending result check: dict(orig, target, side, done_at)
-        self.verify_seen = None      # stable lane judged during the check
-        self.retries = 0             # failed lane changes in a row (this section)
-        self.gave_up = False         # retries exhausted: lane follow only until the section ends
-        self.home = 2                # lane to keep: 2, or 1 / 3 once a direction sign is decided
-        self.home_pending = False    # sign just decided: go to the home lane at once (blind)
-        self.sign_counts = {1: 0, 3: 0}  # frames with sign_A (-> 1) / sign_B (-> 3)
-        self.sign_seen_at = None     # s, last frame with a direction sign (undecided)
-        # newest inputs for the debug image
-        self.dbg_cls = None          # drivable classes (downscaled)
-        self.dbg_ratio = (0.0, 0.0, 0.0)  # left / mine / right pixel share in the ROI
-        self.dbg_pts = (np.zeros(0), np.zeros(0))  # lidar points in base_link
-        self.dbg_front = False       # something in the front box (this scan)
+        self.side_seen_at = None     # s, last frame with a side lane
+        self.zone_grace_from = None  # s, section exit timer starts no earlier than this
+        self.unaligned_since = None
+        self.unaligned_at = None
+        self.left_section_at = None
+        self.home = 2
+        self.sign_counts = {1: 0, 3: 0}
+        # lidar
+        self.box = {LEFT: False, RIGHT: False}   # lane boxes blocked (this scan)
+        self.front_scans = 0         # scans in a row with an object in the front box
+        self.front_near = None       # m from the lidar, nearest point in the front box
         self.front_oy = 0.0          # m, mean y of the front box points (last time seen)
-        self.guard_count = 0         # scans in a row with an object inside guard_dist
-        self.guard_near = None       # m, nearest object ahead (lidar x) in the guard width
-        self.cmd_v = 0.0             # newest /cmd_vel linear.x (moving forward?)
-        self.backoff = None          # running backoff: dict(start, change=(orig, target, side))
-        # running settle: dict(origin, change=(orig, target, side) or None, since, ...)
-        self.settle = None
-        self.recheck = None          # (orig, target, side) of the change a RECHECK interrupts
-        self.front_scans = 0         # scans in a row with an object in the front box (any state)
-        self.dbg_box = {LEFT: False, RIGHT: False}  # lane boxes blocked (this scan)
-        self.lane_state = ''         # /lane_follow/state
-        self.yaw = (float('nan'), float('nan'))  # /lane_follow/yaw [near, ahead] deg
-        self.yaw_at = None           # s
-        self.unaligned_since = None  # s, start of the current not-aligned stretch
-        self.unaligned_at = None     # s, last not-aligned frame (pauses the section exit)
+        self.guard_count = 0
+        self.guard_near = None       # m, nearest object ahead (from the lidar) in the guard width
+        self.guard_y = (-self.guard_half, self.guard_half)
+        self.cmd_v = 0.0
+        # lane change
+        self.request = None          # (side, target) or (GUARD, None)
+        self.request_at = None
+        self.plan = []               # remaining (phase, sec) steps of the change
+        self.phase_until = None
+        self.phase_since = None
+        self.after_backoff = None    # PRE_STOP or ALIGN: what follows the running backoff
+        self.orig_lane = None        # lane before the running change (guard fallback)
+        self.judge = None            # standing judgement: dict(cand, count, single, origin)
+        self.decision = '-'          # last decision text (debug)
+        # inputs / debug
+        self.yaw = (float('nan'), float('nan'))
+        self.yaw_at = None
+        self.centre_y = float('nan')
+        self.lane_state = ''
+        self.dbg_cls = None
+        self.dbg_px = (0, 0, 0)
+        self.dbg_pts = (np.zeros(0), np.zeros(0))
+        self.dbg_shift = 0.0
+        self.dbg_angle = 0.0
         self.last_debug = 0.0
 
         self.create_subscription(Image, p('drivable_class_topic'), self.drivable_callback,
                                  qos_profile_sensor_data)
         self.create_subscription(LaserScan, p('scan_topic'), self.scan_callback,
                                  qos_profile_sensor_data)
-        self.pub_cmd = self.create_publisher(Twist, p('cmd_topic'), 10)
-        self.create_subscription(Twist, p('cmd_vel_topic'),
-                                 lambda m: setattr(self, 'cmd_v', m.linear.x), 10)
-        self.pub_debug = self.create_publisher(Image, p('debug_topic'), 1)
-        self.create_subscription(String, p('lane_state_topic'),
-                                 lambda m: setattr(self, 'lane_state', m.data), 10)
-        self.create_subscription(Float32MultiArray, p('yaw_topic'), self.yaw_callback, 10)
         self.create_subscription(Detection2DArray, p('detections_topic'), self.signs_callback,
                                  qos_profile_sensor_data)
+        self.create_subscription(Float32MultiArray, p('yaw_topic'), self.yaw_callback, 10)
+        self.create_subscription(String, p('lane_state_topic'),
+                                 lambda m: setattr(self, 'lane_state', m.data), 10)
+        self.create_subscription(Twist, p('cmd_vel_topic'),
+                                 lambda m: setattr(self, 'cmd_v', m.linear.x), 10)
+        self.pub_cmd = self.create_publisher(Twist, p('cmd_topic'), 10)
+        self.pub_debug = self.create_publisher(Image, p('debug_topic'), 1)
         self.get_logger().info(
-            f'ready: lane from {p("drivable_class_topic")} | lane 2: object < '
-            f'{self.obstacle_dist:.1f} m -> free side, lane 1/3: lane 2 box clear '
-            f'{self.return_clear:.1f} s -> back | change {self.speed:.2f} m/s w {self.w:.3f}, '
-            f'left {self.times[LEFT][0]:.1f}/{self.times[LEFT][1]:.1f} s, '
-            f'right {self.times[RIGHT][0]:.1f}/{self.times[RIGHT][1]:.1f} s')
+            f'ready (v2): enter on lane 2, home 2 / signs x{self.sign_decide} | change '
+            f'{self.speed:.2f} m/s w {self.w:.2f}, left {self.times[LEFT]}, right '
+            f'{self.times[RIGHT]} | stop {self.pre_stop:.1f} s + ahead >= '
+            f'{self.backoff_clear:.2f} / {self.backoff_clear2:.2f} m (1 / 2 lanes) before '
+            f'every change')
 
-    # ------------------------------------------------------------ lane number
+    # ============================================================== inputs
+    def yaw_callback(self, msg):
+        if len(msg.data) >= 2:
+            self.yaw, self.yaw_at = (float(msg.data[0]), float(msg.data[1])), self.now()
+            self.centre_y = float(msg.data[2]) if len(msg.data) >= 3 else float('nan')
+
+    def yaw_known(self, now):
+        return self.yaw_at is not None and now - self.yaw_at <= self.yaw_timeout \
+            and all(math.isfinite(a) for a in self.yaw)
+
+    def aligned(self, now, limit=None):
+        lim = self.align_max if limit is None else limit
+        return self.yaw_known(now) and all(abs(a) <= lim for a in self.yaw)
+
+    def in_section(self):
+        return self.lane is not None or self.lane_unknown or \
+            self.state in (MissionState.ARMED, MissionState.REQUEST, MissionState.RUNNING)
+
     def signs_callback(self, msg):
-        """Count sign_A / sign_B frames inside the section; decide the home lane once."""
-        in_section = (self.state != MissionState.IDLE or self.lane is not None
-                      or self.verify is not None)
-        if not in_section or self.home != 2:
+        if not self.in_section() or self.home != 2:
             return
         best = None
         for det in msg.detections:
@@ -328,93 +321,65 @@ class ThreeRoadNode(MissionNode):
                     best = (lane, h.score)
         if best is None:
             return
-        self.sign_seen_at = self.now()
         self.sign_counts[best[0]] += 1
-        lead = max(self.sign_counts, key=self.sign_counts.get)
-        other = 3 if lead == 1 else 1
-        if self.sign_counts[lead] >= self.sign_decide and \
-                self.sign_counts[lead] - self.sign_counts[other] >= self.sign_margin:
-            self.home = lead
-            self.home_pending = self.lane != lead
-            names = {v: k for k, v in self.sign_classes.items()}
-            why = (f'{names[lead]} x{self.sign_counts[lead]} vs {names[other]} '
-                   f'x{self.sign_counts[other]} -> home lane {lead}')
-            self.get_logger().info(why)
-            if self.state == MissionState.ARMED:
-                self.reason = why
+        a, b = self.sign_counts[1], self.sign_counts[3]
+        if a + b >= self.sign_decide and a != b:
+            self.home = 1 if a > b else 3
+            self.get_logger().info(f'signs A {a} / B {b} -> home lane {self.home}')
 
-    def step_toward_home(self):
-        """(side, target) one lane towards the home lane, None when already there."""
-        if self.lane is None or self.lane == self.home:
-            return None
-        return (LEFT, self.lane - 1) if self.home < self.lane else (RIGHT, self.lane + 1)
-
-    def avoid_from_home(self, oy):
-        """(side, target) to dodge an object ahead in the home lane, None when no side is free.
-        Home 2: the free side (both free: away from the object, y ~ 0 -> right); home 1 / 3:
-        the only neighbour, lane 2."""
-        if self.home == 2:
-            free = [sd for sd in (LEFT, RIGHT) if not self.dbg_box[sd]]
-            if not free:
-                return None
-            side = free[0] if len(free) == 1 else (LEFT if oy < -self.center_tol else RIGHT)
-            return side, (1 if side == LEFT else 3)
-        side = RIGHT if self.home == 1 else LEFT
-        return (side, 2) if not self.dbg_box[side] else None
-
-    def yaw_callback(self, msg):
-        if len(msg.data) >= 2:
-            self.yaw, self.yaw_at = (float(msg.data[0]), float(msg.data[1])), self.now()
-
-    def aligned(self, now):
-        """Car parallel to the lane: lane_follow near and ahead heading within align_max_deg
-        (a corner, a lost lane or a stale value is 'not aligned')."""
-        if self.yaw_at is None or now - self.yaw_at > self.yaw_timeout:
-            return False
-        return all(math.isfinite(a) and abs(a) <= self.align_max for a in self.yaw)
-
+    # --------------------------------------------------------- lane number
     def drivable_callback(self, msg):
         cls = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.step)[:, :msg.width]
         roi = cls[int(msg.height * self.roi_top):]
-        area = float(roi.size)
-        ratio = tuple(np.count_nonzero(roi == c) / area for c in (2, 1, 3))
-        self.dbg_cls, self.dbg_ratio = cls[::2, ::2], ratio
+        left, mine, right = (int(np.count_nonzero(roi == c)) for c in (2, 1, 3))
+        self.dbg_cls, self.dbg_px = cls[::2, ::2], (left, mine, right)
         now = self.now()
-        mine = ratio[1]
-        left = ratio[0] >= self.side_min
-        right = ratio[2] >= self.side_min
-        if left or right:
+        sl, sr = left >= self.side_min, right >= self.side_min
+        if sl or sr:
             self.side_seen_at = now
-        if self.aligned(now):
+        al = self.aligned(now)
+        if al:
             self.unaligned_since = None
         else:
-            if self.unaligned_since is None:
-                self.unaligned_since = now
+            self.unaligned_since = self.unaligned_since or now
             self.unaligned_at = now
-        if self.settle is not None and self.phase == JUDGE:
-            self.judge_frame(now, ratio)
+        lane = (2 if sl and sr else 1 if sr else 3 if sl else None) \
+            if mine >= self.drivable_min else None
+        if self.judge is not None:              # standing judgement (RUNNING / judge)
+            self.judge_frame(now, al, lane, mine)
             return
         if self.state in (MissionState.REQUEST, MissionState.RUNNING, MissionState.DONE):
-            return  # the lane is not judged while changing lanes
-        if self.unaligned_since is not None:
-            return  # not parallel (corner): keep the lane and the frame count as they are
-        lane = None
-        if mine >= self.drivable_min:
-            lane = 2 if left and right else 1 if right else 3 if left else None
+            return
+        if not al:
+            return                              # not parallel: keep lane and frame count
         if lane is None:
             self.cand, self.cand_count = None, 0
             return
         self.cand_count = self.cand_count + 1 if lane == self.cand else 1
         self.cand = lane
-        if self.cand_count < self.lane_frames:
+        if self.cand_count < self.lane_frames or lane == self.lane:
             return
-        if self.verify is not None:
-            self.verify_seen = lane       # judged by step_state()
-        elif lane != self.lane:
+        if self.lane is not None and abs(lane - self.lane) == 2:
+            self.reason = f'lane {self.lane}: lane {lane} judged, ignored (two lanes away)'
+        elif self.lane is None and not self.lane_unknown and lane != 2 \
+                and self.entry_lane2_only and not self.in_reenter_grace(now):
+            self.reason = f'lane {lane} judged, entry needs lane 2'
+        else:
             self.set_lane(lane)
 
+    def set_lane(self, lane):
+        old, self.lane = self.lane, lane
+        self.lane_unknown = False
+        if self.state == MissionState.IDLE and not self.in_cooldown(self.now()):
+            self.set_state(MissionState.ARMED, f'3-lane section, lane {lane}')
+        elif old is not None:
+            self.get_logger().info(f'lane {old} -> {lane}')
+
+    def in_reenter_grace(self, now):
+        return self.left_section_at is not None and \
+            now - self.left_section_at <= self.reenter_grace
+
     def section_lost(self, now):
-        """No side lane for zone_exit, counted from the last sighting or the last change."""
         pause = None   # a corner hides the side lanes: not-aligned time does not count
         if self.unaligned_at is not None and self.unaligned_since is not None \
                 and now - self.unaligned_since <= self.align_pause_max:
@@ -424,124 +389,154 @@ class ThreeRoadNode(MissionNode):
         return now - ref > self.zone_exit
 
     def leave_section(self, why):
-        """Out of the 3-lane section: forget the lane, the retries and the speed limit."""
-        self.lane = None
-        self.verify = None
+        self.lane, self.lane_unknown = None, False
         self.cand, self.cand_count = None, 0
-        self.retries, self.gave_up = 0, False
         self.zone_grace_from = None
-        self.home, self.home_pending, self.sign_counts = 2, False, {1: 0, 3: 0}
-        self.sign_seen_at = None
+        self.home, self.sign_counts = 2, {1: 0, 3: 0}
+        self.left_section_at = self.now()
         if self.state != MissionState.IDLE:
             self.set_state(MissionState.IDLE, why)
         else:
             self.get_logger().info(f'section over: {why}')
             self.reason = why
 
-    def reset_lidar_timers(self):
-        """The lane 2 clear time and the obstacle count restart (lane changed / re-armed)."""
-        self.side_clear_since = {LEFT: None, RIGHT: None}
-        self.obstacle_count = 0
+    # =============================================================== lidar
+    def scan_points(self, msg):
+        r = np.asarray(msg.ranges, dtype=np.float64)
+        a = msg.angle_min + np.arange(len(r)) * msg.angle_increment
+        ok = np.isfinite(r) & (r > msg.range_min) & (r < msg.range_max)
+        lx, ly, lyaw = self.laser
+        a, r = a[ok] + lyaw, r[ok]
+        return r * np.cos(a) + lx, r * np.sin(a) + ly
 
-    def set_lane(self, lane):
-        old, self.lane = self.lane, lane
-        self.reset_lidar_timers()
-        if self.state == MissionState.IDLE and not self.in_cooldown(self.now()):
-            self.set_state(MissionState.ARMED, f'3-lane section, lane {lane}')
-        elif self.state == MissionState.ARMED:
-            self.get_logger().info(f'lane {old} -> {lane}')
-            self.reason = f'lane {lane}'
+    def box_shift(self):
+        """Lane centre y from the car (+ left) the lane boxes are centred on."""
+        c = self.centre_y
+        if not self.box_follow_lane or self.yaw_at is None or \
+                self.now() - self.yaw_at > self.yaw_timeout or not math.isfinite(c) or \
+                abs(c) > self.box_shift_max:
+            return 0.0
+        return c
 
-    # ------------------------------------------------------------------ lidar
+    def box_angle(self):
+        """Lane direction from the car (rad, + left): lane_follow's near heading when fresh
+        and trusted (<= align_trust_deg), else 0. The lane boxes are laid along it, so a
+        car a few degrees off does not shift the far end of a box (10 deg = 35 cm at 2 m)."""
+        if not self.box_follow_lane or not self.yaw_known(self.now()) or \
+                abs(self.yaw[0]) > self.align_trust:
+            return 0.0
+        return math.radians(self.yaw[0])
+
     def scan_callback(self, msg):
         x, y = self.scan_points(msg)
-        lane_box = {}
+        self.dbg_pts = (x, y)
+        self.dbg_shift = shift = self.box_shift()
+        self.dbg_angle = th = self.box_angle()
+        u = x * math.cos(th) + y * math.sin(th)       # along the lane
+        v = -x * math.sin(th) + y * math.cos(th)      # across the lane (+ left)
         for side, sign in ((LEFT, 1.0), (RIGHT, -1.0)):
-            sel = ((x > self.side_x[0]) & (x < self.side_x[1])
-                   & (np.abs(y - sign * self.side_offset) < self.side_half))
-            lane_box[side] = int(np.count_nonzero(sel)) >= self.side_min_points
-        front = (x > self.front_x) & (x < self.front_x + self.obstacle_dist) & \
+            sel = ((u > self.side_x[0]) & (u < self.side_x[1])
+                   & (np.abs(v - (shift + sign * self.side_offset)) < self.side_half))
+            self.box[side] = int(np.count_nonzero(sel)) >= self.side_min_points
+        reach = self.laser[0] + max(self.dodge, self.dodge2)
+        front = (x > self.front_x) & (x < reach) & \
             (np.abs(y) < self.front_half)
-        self.dbg_pts, self.dbg_box, self.dbg_front = (x, y), lane_box, bool(front.any())
         if front.any():
             self.front_oy = float(np.mean(y[front]))
+            self.front_near = float(np.min(x[front]) - self.laser[0])
+        else:
+            self.front_near = None
         self.front_scans = self.front_scans + 1 if front.any() else 0
         self.check_guard(x, y)
-        checking = self.verify is not None and self.state == MissionState.IDLE
-        if (self.state != MissionState.ARMED or self.lane is None) and not checking:
-            self.obstacle_count = 0
-            return
+        if self.state == MissionState.ARMED and self.lane is not None:
+            self.loop()
+
+    def side_blocked(self):
+        """Next lanes with an object in their lane box."""
+        out = set()
+        if self.box[LEFT] and self.lane > 1:
+            out.add(self.lane - 1)
+        if self.box[RIGHT] and self.lane < 3:
+            out.add(self.lane + 1)
+        return out
+
+    def dodge_target(self, side):
+        """Lane to dodge to if my lane is blocked: the free lane nearest to home (lane 2,
+        both free, home 2: away from the object, y ~ 0 -> right); None if none."""
+        lane, home = self.lane, self.home
+        free = [ln for ln in (1, 2, 3) if ln != lane and ln not in side]
+        if not free:
+            return None
+        free.sort(key=lambda ln: abs(ln - home))
+        if len(free) == 2 and abs(free[0] - home) == abs(free[1] - home):
+            return 1 if self.front_oy < -self.center_tol else 3
+        return free[0]
+
+    def my_lane_blocked(self, side):
+        """Object ahead close enough for the dodge it would cause (one / two lanes)."""
+        if self.front_scans < self.obstacle_scans or self.front_near is None:
+            return False
+        return self.front_near < self.dodge_limit(side)
+
+    def dodge_limit(self, side):
+        """Front distance that starts the dodge: dodge2 for a two-lane change, but dodge
+        when the middle lane is blocked (go on straight, maybe it frees -> one lane)."""
+        tgt = self.dodge_target(side)
+        if tgt is None or abs(tgt - self.lane) != 2:
+            return self.dodge
+        return self.dodge if 2 in side else self.dodge2
+
+    def blocked_lanes(self):
+        if self.lane is None:
+            return set()
+        side = self.side_blocked()
+        return side | ({self.lane} if self.my_lane_blocked(side) else set())
+
+    def decide(self):
+        """(side, target) or None, from self.lane / home / blocked lanes (step 4)."""
+        lane, home = self.lane, self.home
+        if lane is None:
+            return None
+        side = self.side_blocked()
+        if self.my_lane_blocked(side):
+            target = self.dodge_target(side)
+            if target is None:
+                return None
+        elif lane != home:
+            step = 1 if home > lane else -1
+            way = range(lane + step, home + step, step)
+            if any(ln in side for ln in way):
+                return None
+            target = home
+        else:
+            return None
+        return (LEFT if target < lane else RIGHT), target
+
+    def loop(self):
+        """Decision loop while ARMED (on every scan)."""
         now = self.now()
-        for side in (LEFT, RIGHT):
-            if lane_box[side]:
-                self.side_clear_since[side] = None
-            elif self.side_clear_since[side] is None:
-                self.side_clear_since[side] = now
-        self.side_blocked = lane_box
-        if checking:
-            # an object ahead before the check is over: take over, stop, align, judge the
-            # lane standing, then avoid (no guessing which lane the change ended in)
-            self.obstacle_count = self.obstacle_count + 1 if front.any() else 0
-            if self.obstacle_count >= self.obstacle_scans:
-                v = self.verify
-                self.verify = None
-                self.cand, self.cand_count = None, 0
-                self.recheck = (v['orig'], v['target'], v['side'])
-                self.request = (RECHECK, None)
-                self.request_at = now
-                self.set_state(MissionState.REQUEST,
-                               f'checking: object ahead -> stop and judge the lane '
-                               f'(expected {v["target"]})')
+        if not self.aligned(now):
             return
-
-        step = self.step_toward_home()
-        if step is not None:
-            side, target = step
-            if self.home_pending:   # sign just decided: blind, no clear wait
-                self.request_now(side, target, f'home lane {self.home} (sign): lane '
-                                               f'{self.lane} -> {target} at once')
-                return
-            if self.home == 2 and self.sign_seen_at is not None \
-                    and now - self.sign_seen_at <= self.sign_hold:
-                # a direction sign is being counted: the home lane may change, do not go yet
-                sc = self.sign_counts
-                self.reason = f'waiting for the sign decision (A {sc[1]} / B {sc[3]})'
-                return
-            # back to the home lane once its box stays empty (passed the dodged object)
-            since = self.side_clear_since[side]
-            if since is not None and now - since >= self.return_clear:
-                self.make_request(side, target, f'lane {self.lane}: lane {target} clear '
-                                                f'{self.return_clear:.1f} s (home {self.home})')
+        move = self.decide()
+        bl = sorted(self.blocked_lanes())
+        wait = ''
+        if move is None and self.lane in (1, 3) and 2 in self.side_blocked() \
+                and self.front_near is not None and self.front_near < self.dodge2:
+            wait = f' (lane 2 blocked: straight to {self.dodge:.2f})'
+        self.decision = (f'lane {self.lane} home {self.home} blocked {bl or "-"} -> '
+                         + (f'{move[0]} to {move[1]}' if move else 'stay') + wait)
+        if move is None:
             return
-        self.home_pending = False
-
-        self.obstacle_count = self.obstacle_count + 1 if front.any() else 0
-        if self.obstacle_count < self.obstacle_scans:
-            return
-        oy = float(np.mean(y[front]))
-        dodge = self.avoid_from_home(oy)
-        if dodge is None:
-            self.reason = f'lane {self.lane}: object ahead, no free side, waiting'
-            return
-        side, target = dodge
-        self.make_request(side, target, f'lane {self.lane}: object at x '
-                                        f'{float(np.min(x[front])):.2f} y {oy:+.2f} '
-                                        f'(home {self.home})')
+        self.request = move
+        self.request_at = now
+        self.set_state(MissionState.REQUEST, self.decision)
 
     def check_guard(self, x, y):
-        """
-        Safety inside the section: an object closer than guard_dist to the lidar (x measured
-        from the lidar) within +-guard_half_width, guard_min_points points for guard_scans
-        scans, while moving forward -> back off. ARMED / IDLE inside the section (cooldown, result
-        check): ask the master for [3road] (the master drives lane follow there); RUNNING:
-        abort the lane change right away.
-        """
         lx = self.laser[0]
         y0, y1 = -self.guard_half, self.guard_half
-        if self.state == MissionState.RUNNING and self.phase in (TURN, COUNTER) \
-                and self.request is not None and self.request[0] in (LEFT, RIGHT):
-            # the front corner sweeps out to the side the car moves to: cover it too
-            if self.request[0] == LEFT:
+        changing = self.state == MissionState.RUNNING and self.phase in (TURN, MID, COUNTER)
+        if changing and self.request is not None and self.request[0] in (LEFT, RIGHT):
+            if self.request[0] == LEFT:     # the front corner sweeps to the side it moves to
                 y1 += self.guard_turn_extra
             else:
                 y0 -= self.guard_turn_extra
@@ -551,421 +546,240 @@ class ThreeRoadNode(MissionNode):
         close = sel & (x - lx < self.guard_dist)
         self.guard_count = self.guard_count + 1 \
             if int(np.count_nonzero(close)) >= self.guard_min_points else 0
-        if self.guard_count < self.guard_scans or self.backoff is not None:
+        if self.guard_count < self.guard_scans:
             return
         why = f'guard: object {self.guard_near:.2f} m from the lidar'
         now = self.now()
-        in_section = self.lane is not None or self.verify is not None
-        idle_in_section = self.state == MissionState.IDLE and in_section  # e.g. cooldown
-        if (self.state == MissionState.ARMED or idle_in_section) and self.cmd_v > 0.0:
+        if changing:
+            self.guard_count = 0
+            self.start_backoff(now, ALIGN, f'{why}, lane change aborted')
+        elif self.state in (MissionState.ARMED, MissionState.IDLE) and self.in_section() \
+                and self.cmd_v > 0.0:
             self.request = (GUARD, None)
             self.request_at = now
             self.set_state(MissionState.REQUEST, f'{why} -> back off')
-        elif self.state == MissionState.RUNNING and self.phase in (TURN, COUNTER) \
-                and self.request is not None and self.request[0] != GUARD:
-            side, target = self.request
-            self.start_backoff(now, (self.lane, target, side), f'{why}, lane change aborted')
 
-    def avoid_move(self):
-        """
-        (side, target) to avoid from self.lane, None when nothing is possible (no waiting:
-        the obstacles are fixed, waiting does not help; the guard protects the change).
-          not in the home lane -> one lane towards it (home = 2, or 1 / 3 from the signs)
-          in the home lane     -> dodge: home 2 -> the free side (both free: away from the
-                                  object, y ~ 0 -> right); home 1 / 3 -> lane 2 (even if
-                                  its box looks blocked)
-        """
-        if self.gave_up or self.lane not in (1, 2, 3):
-            return None
-        if self.lane != self.home:
-            return self.step_toward_home()
-        move = self.avoid_from_home(self.front_oy)
-        if move is None and self.home != 2:
-            move = (RIGHT, 2) if self.home == 1 else (LEFT, 2)
-        return move
-
-    def start_backoff(self, now, change, why, origin=GUARD):
-        self.backoff = dict(start=now, change=change, origin=origin)
-        self.settle = None
-        self.set_phase(BACKOFF, why)
-
-    # ------------------------------------------------------------------ settle
-    def start_settle(self, now, origin, change, why, backed=False):
-        """
-        stop -> align -> judge -> decide, all inside [3road]. origin: GUARD (after a guard
-        backoff), RECHECK (object ahead during a moving result check), VERIFY (right after a
-        lane change). An object closer than backoff_clear_dist to the lidar and no backoff yet:
-        back off straight first (a lane change from standstill needs room to get past it).
-        """
-        if not backed and self.guard_near is not None and self.guard_near < self.backoff_clear:
-            self.start_backoff(now, change, f'{why}: object {self.guard_near:.2f} m '
-                                            f'< {self.backoff_clear:.2f} m, back off first',
-                               origin=origin)
-            return
-        self.backoff = None
-        hold = self.verify_stop if origin == VERIFY else self.settle_sec
-        skip = self.verify_align_skip if origin == VERIFY else self.align_done
-        self.settle = dict(origin=origin, change=change, since=now, hold=hold, skip=skip)
-        self.publish(0.0, 0.0)
-        self.set_phase(STOP, f'{why}, hold {hold:.1f} s')
-
-    def yaw_known(self, now):
-        return self.yaw_at is not None and now - self.yaw_at <= self.yaw_timeout \
-            and all(math.isfinite(a) for a in self.yaw)
-
-    def step_settle(self, now):
-        st = self.settle
-        age = now - st['since']
-        if self.phase == STOP:
-            self.publish(0.0, 0.0)
-            if age < st['hold']:
-                return
-            if not self.yaw_known(now):
-                self.start_judge(now, 'no lane heading, align skipped')
-            elif all(abs(a) <= st['skip'] for a in self.yaw):
-                self.start_judge(now, f'parallel (yaw {self.yaw_text()})')
-            else:
-                st['since'] = now
-                self.set_phase(ALIGN, f'yaw {self.yaw_text()} -> within '
-                                      f'{self.align_done:.0f} deg')
-            return
-        if self.phase == ALIGN:
-            if not self.yaw_known(now):
-                self.publish(0.0, 0.0)
-                self.start_judge(now, 'lane heading lost while aligning')
-            elif all(abs(a) <= self.align_done for a in self.yaw):
-                self.publish(0.0, 0.0)
-                self.start_judge(now, f'aligned in {age:.1f} s (yaw {self.yaw_text()})')
-            elif age >= self.align_max_sec:
-                self.publish(0.0, 0.0)
-                self.start_judge(now, f'align timeout {age:.1f} s (yaw {self.yaw_text()})')
-            else:
-                # backing off: w = k * yaw turns the car parallel (yaw rate sign is the same
-                # forward and backward)
-                w = self.align_k * math.radians(self.yaw[0])
-                self.publish(self.align_speed,
-                             max(-self.align_w_max, min(self.align_w_max, w)))
-            return
-        if self.phase == JUDGE:
-            self.publish(0.0, 0.0)
-            if st.get('lane') is not None:
-                self.decide_after_settle(now, st['lane'], f'lane {st["lane"]} '
-                                                         f'x{self.lane_frames}')
-            elif age >= self.judge_max:
-                weak = st.get('weak')
-                if weak is not None:
-                    self.decide_after_settle(now, weak, f'lane {weak} (weak, last frame)')
-                else:
-                    self.decide_after_settle(now, None, 'no lane judged')
-
-    def start_judge(self, now, why):
-        st = self.settle
-        st.update(since=now, cand=None, count=0, lane=None, weak=None)
-        self.set_phase(JUDGE, why)
-
-    def judge_frame(self, now, ratio):
-        """One drivable-class frame while standing in JUDGE (no alignment gate: already
-        aligned, or as good as it gets)."""
-        st = self.settle
-        if now - st['since'] < self.judge_discard or st.get('lane') is not None:
-            return   # frames from before the stop (pipeline delay)
-        left, mine, right = ratio
-        if mine < self.drivable_min:
-            st['cand'], st['count'] = None, 0
-            return
-        wl, wr = left >= self.weak_side, right >= self.weak_side
-        weak = 2 if wl and wr else 1 if wr else 3 if wl else None
-        if weak is not None:
-            st['weak'] = weak
-        sl, sr = left >= self.side_min, right >= self.side_min
-        lane = 2 if sl and sr else 1 if sr else 3 if sl else None
-        if lane is None:
-            st['cand'], st['count'] = None, 0
-            return
-        st['count'] = st['count'] + 1 if lane == st['cand'] else 1
-        st['cand'] = lane
-        if st['count'] >= self.lane_frames:
-            st['lane'] = lane
-
-    def decide_after_settle(self, now, lane, how):
-        st = self.settle
-        if st['origin'] == VERIFY:
-            self.decide_verify(now, lane, how)
-            return
-        self.settle = None
-        change = st['change']
-        if lane is None:
-            lane = self.lane if self.lane is not None else (change[0] if change else None)
-        self.lane = lane
-        self.cand, self.cand_count = None, 0
-        self.verify = None
-        self.zone_grace_from = now
-        self.reset_lidar_timers()
-        note = ''
-        if st['origin'] == RECHECK and change is not None:
-            orig, target, _ = change
-            if lane == target:
-                self.retries = 0
-            elif lane == orig:
-                self.retries += 1
-                note = f', change {orig} -> {target} fell short: retry {self.retries}/' \
-                       f'{self.max_retries}'
-                if self.retries > self.max_retries:
-                    self.gave_up = True
-                    note += ' (giving up)'
-        why = f'judged {how}{note}'
-        self.get_logger().info(f'settle: {why}')
-        self.start_change(now, self.avoid_move(), why)
-
-    def start_change(self, now, move, why):
-        """Next lane change right away (still [3road]); None: DONE, lane follow takes over."""
-        if move is None or self.gave_up:
-            self.request = None
-            self.finish(f'{why}: no lane change -> lane follow')
-            return
-        self.request = move
-        side, target = move
-        self.phase_until = now + self.times[side][0]
-        self.set_phase(TURN, f'{why} -> {side} to lane {target}, {self.times[side][0]:.1f} s')
-
-    def decide_verify(self, now, lane, how):
-        """
-        Standing result check right after a lane change (orig, target, side):
-          target lane, front clear   -> ok, DONE (lane follow)
-          target lane, object ahead  -> avoid from it at once
-          original lane (fell short) -> retry the same change at once (max_retries)
-          another lane               -> take it; object ahead: avoid, else DONE
-          nothing judged             -> DONE with the old moving result check
-        """
-        st = self.settle
-        self.settle = None
-        orig, target, side = st['change']
-        self.cand, self.cand_count = None, 0
-        self.zone_grace_from = now
-        self.reset_lidar_timers()
-        if lane is None:
-            self.verify = dict(orig=orig, target=target, side=side, done_at=now)
-            self.verify_seen = None
-            self.get_logger().info('verify: no lane judged, checking while driving')
-            self.finish(f'lane {orig} -> {target} ({side}), no lane judged standing, checking')
-            return
-        self.verify = None
-        self.lane = lane
-        blocked = self.front_scans >= self.obstacle_scans
-        if lane == orig and lane != target:
-            self.retries += 1
-            why = f'still lane {lane} ({how}), retry {self.retries}/{self.max_retries}'
-            if self.retries > self.max_retries:
-                self.gave_up = True
-                why += ': giving up'
-            self.get_logger().info(f'verify: {why}')
-            self.start_change(now, (side, target), why)
-            return
-        if lane == target:
-            self.retries = 0
-            self.get_logger().info(f'lane change ok: lane {orig} -> {lane} ({how})')
-        else:
-            self.get_logger().info(f'verify: lane {lane} ({how}), expected {target}')
-        if blocked:
-            self.start_change(now, self.avoid_move(), f'lane {lane}: object ahead after the '
-                                                      f'change')
-            return
-        self.request = None
-        self.finish(f'lane change ok: lane {lane}' if lane == target else
-                    f'lane {lane} after the change (expected {target})')
-
-    def scan_points(self, msg):
-        r = np.asarray(msg.ranges, dtype=np.float64)
-        a = msg.angle_min + np.arange(len(r)) * msg.angle_increment
-        ok = np.isfinite(r) & (r > msg.range_min) & (r < msg.range_max)
-        lx, ly, lyaw = self.laser
-        a, r = a[ok] + lyaw, r[ok]
-        return r * np.cos(a) + lx, r * np.sin(a) + ly
-
-    def request_now(self, side, target, why):
-        """Lane change request without the alignment / side-lane checks (blind moves)."""
-        if self.gave_up:
-            self.reason = f'gave up after {self.max_retries} retries: {why} (ignored)'
-            return
-        self.request = (side, target)
-        self.request_at = self.now()
-        self.set_state(MissionState.REQUEST, why)
-
-    def make_request(self, side, target, why):
-        now = self.now()
-        if not self.aligned(now):
-            self.reason = f'not aligned (yaw {self.yaw_text()}): {why} (held)'
-            return
-        if self.side_seen_at is None or now - self.side_seen_at > self.side_fresh:
-            self.reason = f'no side lane in the last {self.side_fresh:.1f} s: {why} (held)'
-            return  # the camera does not confirm the section right now
-        if self.gave_up:
-            self.reason = f'gave up after {self.max_retries} retries: {why} (ignored)'
-            return
-        self.request = (side, target)
-        self.request_at = self.now()
-        self.set_state(MissionState.REQUEST, f'{why} -> {side} to lane {target}')
-
-    # ------------------------------------------------------------ lane change
+    # ========================================================= lane change
     def on_start(self, now):
+        self.judge = None
         if self.request is not None and self.request[0] == GUARD:
-            self.start_backoff(now, None, 'guard backoff')
-            return
-        if self.request is not None and self.request[0] == RECHECK:
-            change, self.recheck = self.recheck, None
-            self.start_settle(now, RECHECK, change, 'object ahead while checking')
-            return
-        if self.request is None:  # forced by /master/set_mode: towards lane 2 if known
-            side = RIGHT if self.lane == 1 else LEFT if self.lane == 3 else RIGHT
-            self.request = (side, {1: 2, 3: 2}.get(self.lane, 3))
-        side, target = self.request
-        self.phase_until = now + self.times[side][0]
-        self.set_phase(TURN, f'{side} to lane {target}, {self.times[side][0]:.1f} s')
+            self.start_backoff(now, PRE_STOP, 'guard backoff')
+        else:
+            self.start_pre_stop(now, 'change granted')
 
     def on_stop(self, now):
         self.request = None
-        self.settle = None
-        self.phase_until = None
-        self.backoff = None
+        self.plan = []
+        self.judge = None
+        self.after_backoff = None
         self.guard_count = 0
 
+    def start_pre_stop(self, now, why):
+        self.phase_since = now
+        self.centre_samples = []
+        self.set_phase(PRE_STOP, f'{why}, hold {self.pre_stop:.1f} s')
+
+    def start_backoff(self, now, after, why, need=None):
+        self.after_backoff = after
+        self.backoff_need = self.backoff_clear if need is None else need
+        self.phase_since = now
+        self.set_phase(BACKOFF, why)
+
+    def try_start(self, now):
+        """Stopped long enough: decide again, back off when too close for that change
+        (one / two lanes), else change."""
+        move = self.decide()
+        bl = sorted(self.blocked_lanes())
+        wait = ''
+        if move is None and self.lane in (1, 3) and 2 in self.side_blocked() \
+                and self.front_near is not None and self.front_near < self.dodge2:
+            wait = f' (lane 2 blocked: straight to {self.dodge:.2f})'
+        self.decision = (f'lane {self.lane} home {self.home} blocked {bl or "-"} -> '
+                         + (f'{move[0]} to {move[1]}' if move else 'stay') + wait)
+        if move is None:
+            self.request = None
+            self.finish(f'{self.decision}: lane follow')
+            return
+        side, target = move
+        # two lanes with the middle blocked started at dodge (not dodge2): one-lane clearance
+        two_far = abs(target - self.lane) == 2 and 2 not in self.side_blocked()
+        need = self.backoff_clear2 if two_far else self.backoff_clear
+        if self.guard_near is not None and self.guard_near < need:
+            self.start_backoff(now, PRE_STOP, f'{side} to {target}: object '
+                                              f'{self.guard_near:.2f} m < {need:.2f} m, '
+                                              f'back off to {need:.2f} m', need)
+            return
+        self.request = move
+        self.orig_lane = self.lane
+        if abs(target - self.lane) == 2:
+            t, m, c = self.times2[side]
+        else:
+            (t, c), m = self.times[side], None
+        # sideways offset at the start: the lane centre y (+ = centre left of the car) is
+        # extra travel to the left, less travel to the right -> longer / shorter turn
+        bias_txt = ''
+        if self.centre_samples:
+            cy = float(np.mean(self.centre_samples))
+            extra = cy if side == LEFT else -cy
+            if m is not None:
+                # two lanes: only the straight mid step (heading kept, sideways travel only)
+                bias = max(-self.mid_bias_max, min(self.mid_bias_max, self.mid_bias_k * extra))
+                m = max(0.0, m + bias)
+                bias_txt = f' (mid {bias:+.2f} s, centre {cy * 100:+.0f} cm)'
+            else:
+                # one lane: turn and counter by the same time, the car still ends parallel
+                bias = max(-self.turn_bias_max,
+                           min(self.turn_bias_max, self.turn_bias_k * extra))
+                t, c = max(0.1, t + bias), max(0.1, c + bias)
+                bias_txt = f' (turn/counter {bias:+.2f} s, centre {cy * 100:+.0f} cm)'
+        self.plan = [(TURN, t)] + ([(MID, m)] if m is not None else []) + [(COUNTER, c)]
+        steps = ' / '.join(f'{sec:.2f}' for _, sec in self.plan)
+        self.get_logger().info(f'{side} to lane {target}: {steps} s{bias_txt}')
+        self.next_step(now, f'{self.decision}, {steps} s{bias_txt}')
+
+    def next_step(self, now, why=''):
+        phase, sec = self.plan.pop(0)
+        self.phase_until = now + sec
+        self.set_phase(phase, why or f'{sec:.1f} s')
+
+    def start_judge(self, now, origin, why):
+        """origin: 'change' (after a lane change) or 'guard' (after an aborted one)."""
+        self.judge = dict(since=now, cand=None, count=0, single=0, origin=origin)
+        self.set_phase(JUDGE, why)
+
+    def judge_frame(self, now, al, lane, mine):
+        j = self.judge
+        if now - j['since'] < self.judge_discard or not al or mine < self.drivable_min:
+            return   # frames from before the stop / not parallel: no answer
+        if lane is None:
+            j['single'] += 1
+            j['cand'], j['count'] = None, 0
+            return
+        j['single'] = 0
+        j['count'] = j['count'] + 1 if lane == j['cand'] else 1
+        j['cand'] = lane
+
+    def step_judge(self, now):
+        j = self.judge
+        if j['count'] >= self.lane_frames:
+            self.judge = None
+            old, self.lane = self.lane, j['cand']
+            self.lane_unknown = False
+            self.zone_grace_from = now
+            self.get_logger().info(f'judged lane {self.lane} (was {old}, home {self.home})')
+            if j['origin'] == 'guard':      # moved while aligning: the full stop first
+                self.start_pre_stop(now, f'lane {self.lane} judged')
+            else:                           # post_stop already held the car
+                self.try_start(now)
+            return
+        lost = j['single'] >= self.lane_frames
+        if not lost and now - j['since'] < self.judge_max:
+            return
+        self.judge = None
+        if j['origin'] == 'guard' and not lost:
+            self.lane = self.orig_lane      # not judged: the lane before the aborted change
+            self.get_logger().info(f'not judged after the guard: lane {self.lane} kept')
+            self.start_pre_stop(now, f'lane {self.lane} kept')
+            return
+        why = 'my lane only' if lost else 'no lane judged (not parallel?)'
+        self.lane, self.lane_unknown = None, True
+        self.zone_grace_from = now
+        self.request = None
+        self.get_logger().info(f'lane unknown: {why}')
+        self.finish(f'{why}: lane unknown -> lane follow')
+
+    def step_running(self, now):
+        ph = self.phase
+        age = now - (self.phase_since or now)
+        if ph == PRE_STOP:
+            self.publish(0.0, 0.0)
+            c = self.centre_y
+            if self.aligned(now) and math.isfinite(c) and abs(c) <= self.box_shift_max:
+                self.centre_samples.append(c)
+            if age >= self.pre_stop:
+                self.try_start(now)
+        elif ph == BACKOFF:
+            clear = self.guard_near is None or self.guard_near >= self.backoff_need
+            if (age >= self.backoff_min and clear) or age >= self.backoff_max:
+                self.publish(0.0, 0.0)
+                self.guard_count = 0
+                if self.after_backoff == ALIGN:
+                    self.start_align(now, f'backoff {age:.1f} s')
+                else:
+                    self.start_pre_stop(now, f'backoff {age:.1f} s')
+            else:
+                self.publish(self.backoff_speed, 0.0)
+        elif ph in (TURN, MID, COUNTER):
+            if now >= self.phase_until:
+                if self.plan:
+                    self.next_step(now)
+                else:
+                    self.phase_since = now
+                    self.publish(0.0, 0.0)
+                    self.set_phase(POST_STOP, f'lane {self.orig_lane} -> {self.request[1]} '
+                                              f'done, hold {self.post_stop:.1f} s')
+                    return
+            side = self.request[0]
+            sign = 1.0 if side == LEFT else -1.0
+            w = {TURN: sign * self.w, MID: 0.0}.get(self.phase, -sign * self.w)
+            self.publish(self.speed, w)
+        elif ph == POST_STOP:
+            self.publish(0.0, 0.0)
+            if age >= self.post_stop:
+                self.start_judge(now, 'change', 'judge the lane standing')
+        elif ph == ALIGN:
+            self.step_align(now, age)
+        elif ph == JUDGE:
+            self.publish(0.0, 0.0)
+            self.step_judge(now)
+
+    def start_align(self, now, why):
+        self.phase_since = now
+        if self.aligned(now, self.align_done):
+            self.start_judge(now, 'guard', f'{why}, parallel')
+        elif self.aligned(now, self.align_trust):
+            self.set_phase(ALIGN, f'{why}, yaw {self.yaw_text()} -> {self.align_done:.0f} deg')
+        else:
+            self.start_judge(now, 'guard', f'{why}, yaw {self.yaw_text()} not trusted, '
+                                           f'no align')
+
+    def step_align(self, now, age):
+        if self.aligned(now, self.align_done) or not self.aligned(now, self.align_trust) \
+                or age >= self.align_max_sec:
+            self.publish(0.0, 0.0)
+            self.start_judge(now, 'guard', f'align {age:.1f} s, yaw {self.yaw_text()}')
+            return
+        w = self.align_k * math.radians(self.yaw[0])   # backing off turns the car parallel
+        self.publish(self.align_speed, max(-self.align_w_max, min(self.align_w_max, w)))
+
+    # ================================================================ tick
     def tick(self, now):
         if now - self.last_debug >= self.debug_period and self.pub_debug.get_subscription_count():
             self.last_debug = now
             self.publish_debug(now)
-        self.step_state(now)
-        # inside the 3-lane section the master drives lane follow at section_speed
-        in_section = (self.state in (MissionState.ARMED, MissionState.REQUEST)
-                      or self.lane is not None or self.verify is not None)
-        self.speed_limit = self.section_speed if in_section else 0.0
-
-    def step_state(self, now):
-        if self.verify is not None and self.state == MissionState.IDLE:
-            self.check_result(now)
-            return
-        if self.state == MissionState.IDLE and self.lane is not None:
-            # back from a lane change (lane already set): re-arm once the cooldown is over
-            if not self.section_lost(now):
-                if not self.in_cooldown(now):
-                    self.set_state(MissionState.ARMED, f'3-lane section, lane {self.lane}')
-            else:
-                self.leave_section(f'no side lane for {self.zone_exit:.0f} s')
-            return
-        if self.state == MissionState.ARMED:
+        st = self.state
+        if st == MissionState.RUNNING and self.active and self.phase:
+            self.step_running(now)
+        elif st == MissionState.DONE and self.active:
+            self.publish(0.0, 0.0)          # until the master switches back to normal
+        elif st == MissionState.REQUEST and now - self.request_at > self.request_timeout:
+            self.request = None
+            self.set_state(MissionState.ARMED if self.lane is not None else MissionState.IDLE,
+                           f'not granted within {self.request_timeout:.0f} s')
+        elif st == MissionState.ARMED and self.section_lost(now):
+            self.leave_section(f'no side lane for {self.zone_exit:.0f} s')
+        elif st == MissionState.IDLE and (self.lane is not None or self.lane_unknown):
             if self.section_lost(now):
                 self.leave_section(f'no side lane for {self.zone_exit:.0f} s')
-            return
-        if self.state == MissionState.REQUEST:
-            if now - self.request_at > self.request_timeout:
-                self.request = None
-                self.set_state(MissionState.ARMED,
-                               f'not granted within {self.request_timeout:.0f} s')
-            return
-        if not self.active or self.request is None:
-            return
-        if self.backoff is not None:
-            self.step_backoff(now)
-            return
-        if self.settle is not None:
-            self.step_settle(now)
-            return
-        side, target = self.request
-        sign = 1.0 if side == LEFT else -1.0
-        if self.state == MissionState.RUNNING:
-            if now >= self.phase_until and self.phase == TURN:
-                self.phase_until = now + self.times[side][1]
-                self.set_phase(COUNTER, f'{self.times[side][1]:.1f} s')
-            elif now >= self.phase_until and self.phase == COUNTER:
-                # stop and judge standing (still [3road]); the lane is set by the check
-                self.zone_grace_from = now
-                self.start_settle(now, VERIFY, (self.lane, target, side),
-                                  f'lane {self.lane} -> {target} ({side}) done, checking')
-                return
-        if self.state == MissionState.RUNNING:
-            w = sign * self.w if self.phase == TURN else -sign * self.w
-            self.publish(self.speed, w)
-        else:
-            self.publish(self.speed, 0.0)  # DONE: straight until the master takes over
+            elif self.lane is not None and not self.in_cooldown(now):
+                self.set_state(MissionState.ARMED, f'3-lane section, lane {self.lane}')
+        self.speed_limit = self.section_speed if self.in_section() else 0.0
 
-    def step_backoff(self, now):
-        """Back off straight for backoff_min..backoff_max s, until nothing within
-        backoff_clear_dist, then settle (stop, align, judge) and avoid - still in [3road]."""
-        b = self.backoff
-        age = now - b['start']
-        clear = self.guard_near is None or self.guard_near >= self.backoff_clear
-        if (age >= self.backoff_min and clear) or age >= self.backoff_max:
-            self.guard_count = 0
-            why = f'backoff {age:.1f} s'
-            if b['change'] is not None and b['origin'] == GUARD:
-                why += f', aborted change {b["change"][0]} -> {b["change"][1]}'
-            self.start_settle(now, b['origin'], b['change'], why, backed=True)
-            return
-        self.publish(self.backoff_speed, 0.0)
-
-    def check_result(self, now):
-        """
-        After a lane change: wait verify_settle, then the stable lane of the next verify_sec.
-
-        target lane -> success. Original lane (or no answer by the end) -> failed, e.g. the
-        remote control held the car: back to ARMED at once (no cooldown) so the trigger is
-        evaluated again; after max_retries failures in a row only lane follow until the
-        section ends.
-        """
-        v = self.verify
-        age = now - v['done_at']
-        if age < self.verify_settle:
-            v['last_t'] = now
-            return
-        if self.aligned(now):   # only aligned frames judge the lane: count that time
-            v['aligned_time'] = v.get('aligned_time', 0.0) + now - v.get('last_t', now)
-        v['last_t'] = now
-        seen = self.verify_seen
-        if seen == v['target']:
-            self.verify = None
-            self.retries = 0
-            self.lane = v['target']
-            self.cand, self.cand_count = seen, self.lane_frames
-            self.get_logger().info(f'lane change ok: lane {v["orig"]} -> {seen}')
-            self.reason = f'lane change ok: lane {seen}'
-            return
-        window_open = (v.get('aligned_time', 0.0) < self.verify_sec and
-                       age < self.verify_settle + self.verify_sec + self.verify_extend_max)
-        if seen != v['orig'] and window_open:
-            return  # no clear answer yet (on the line / not aligned): keep looking
-        self.verify = None
-        if seen is None and (self.side_seen_at is None or self.side_seen_at < v['done_at']):
-            # no side lane at all since the change: out of the 3-lane section, not a failure
-            self.leave_section(f'no side lane since the change (expected lane {v["target"]})')
-            return
-        self.lane = seen if seen is not None else v['orig']
-        self.retries += 1
-        self.reset_lidar_timers()
-        why = (f'lane {self.lane} after the change (expected {v["target"]})'
-               if seen is not None else f'no lane judged (expected {v["target"]})')
-        self.zone_grace_from = now
-        self.cooldown_until = now   # retry right away
-        if self.retries > self.max_retries:
-            self.gave_up = True
-            self.set_state(MissionState.ARMED, f'{why}: failed {self.retries}x, giving up '
-                                               f'(lane follow only in this section)')
-        else:
-            self.set_state(MissionState.ARMED, f'{why}: retry {self.retries}/'
-                                               f'{self.max_retries}')
-
-    # ------------------------------------------------------------------ debug
+    # =============================================================== debug
     def publish_debug(self, now):
-        """
-        /three_road/debug (bgr8, 640x300) for rqt_image_view.
-
-        left : drivable classes (my lane green, left sky, right purple), lane ROI line,
-               pixel shares vs side_min_ratio, lane number / candidate
-        right: lidar top view (car at the bottom, 1 grid = 0.2 m), front box and lane
-               boxes (red = object, green = empty) with the lane 2 clear timer
-        bottom: mission state / phase / reason, lane_follow tracking state
-        """
         img = np.zeros((300, 640, 3), np.uint8)
-        self.draw_classes(img[:240, :320])
-        self.draw_lidar(img[:240, 320:], now)
+        self.draw_classes(img[:240, :320], now)
+        self.draw_lidar(img[:240, 320:])
         names = {0: 'IDLE', 1: 'ARMED', 2: 'REQUEST', 3: 'RUNNING', 4: 'DONE'}
         state = names.get(self.state, '?') + (f'/{self.phase}' if self.phase else '')
         cool = ' (cooldown)' if self.in_cooldown(now) else ''
@@ -978,7 +792,7 @@ class ThreeRoadNode(MissionNode):
         msg.data = array('B', img.tobytes())  # array: skips rclpy per-byte check
         self.pub_debug.publish(msg)
 
-    def draw_classes(self, view):
+    def draw_classes(self, view, now):
         if self.dbg_cls is None:
             put(view, 'no /yolopx/drivable_class', (10, 120), (0, 0, 255), 0.5)
             return
@@ -987,73 +801,93 @@ class ThreeRoadNode(MissionNode):
         view[:] = cv2.resize(lut[self.dbg_cls], (320, 240), interpolation=cv2.INTER_NEAREST)
         y_roi = int(240 * self.roi_top)
         cv2.line(view, (0, y_roi), (319, y_roi), (255, 255, 255), 1)
-        lr, mr, rr = self.dbg_ratio
-        for i, (name, r, col) in enumerate((('L', lr, (235, 206, 135)), ('M', mr, (0, 255, 0)),
-                                            ('R', rr, (200, 50, 160)))):
-            mark = '' if name == 'M' else (' ok' if r >= self.side_min else ' -')
-            put(view, f'{name} {r:.2f}{mark}', (8 + 104 * i, 20), col, 0.5)
-        lane = f'lane {self.lane}' if self.lane else 'lane -'
-        put(view, f'{lane}  cand {self.cand or "-"} x{self.cand_count}  '
-                  f'(min {self.side_min:.2f})', (8, 44), (255, 255, 255), 0.45)
-        sc = self.sign_counts
-        sign_txt = (f'A {sc[1]} / B {sc[3]} -> home {self.home}' if self.home != 2 else
-                    f'A {sc[1]} / B {sc[3]} (need {self.sign_decide}, +{self.sign_margin})')
-        put(view, sign_txt, (8, 154), (255, 200, 0), 0.45)
-        al = self.aligned(self.now())
+        for i, (name, v, col) in enumerate((('L', self.dbg_px[0], (235, 206, 135)),
+                                            ('M', self.dbg_px[1], (0, 255, 0)),
+                                            ('R', self.dbg_px[2], (200, 50, 160)))):
+            mark = '' if name == 'M' else (' ok' if v >= self.side_min else ' -')
+            put(view, f'{name} {v}{mark}', (8 + 104 * i, 20), col, 0.5)
+        lane = f'lane {self.lane}' if self.lane else ('lane ?' if self.lane_unknown else 'lane -')
+        put(view, f'{lane}  home {self.home}  cand {self.cand or "-"} x{self.cand_count}',
+            (8, 44), (255, 255, 255), 0.45)
+        put(view, self.decision[:48], (8, 66), (0, 255, 255), 0.42)
+        if self.judge is not None:
+            j = self.judge
+            put(view, f'judge: cand {j["cand"] or "-"} x{j["count"]}/{self.lane_frames} '
+                      f'single {j["single"]}', (8, 88), (0, 255, 255), 0.45)
+        al = self.aligned(now)
         put(view, f'{"aligned" if al else "NOT aligned"}  yaw {self.yaw_text()}', (8, 132),
             (0, 255, 0) if al else (0, 0, 255), 0.45)
-        if self.verify is not None:
-            put(view, f'checking: expect lane {self.verify["target"]}, seen '
-                      f'{self.verify_seen or "-"}', (8, 66), (0, 255, 255), 0.45)
-        st = self.settle
-        if st is not None and self.phase == JUDGE:
-            put(view, f'judge: cand {st.get("cand") or "-"} x{st.get("count", 0)}/'
-                      f'{self.lane_frames}  weak {st.get("weak") or "-"}', (8, 66),
-                (0, 255, 255), 0.45)
-        elif st is not None:
-            put(view, f'{self.phase} {self.now() - st["since"]:.1f}s  yaw {self.yaw_text()}'
-                      f' (done {self.align_done:.0f})', (8, 66), (0, 255, 255), 0.45)
-        if self.retries or self.gave_up:
-            put(view, 'GAVE UP (lane follow only)' if self.gave_up else
-                f'retry {self.retries}/{self.max_retries}', (8, 88), (0, 0, 255), 0.5)
+        sc = self.sign_counts
+        put(view, f'A {sc[1]} / B {sc[3]} (need {self.sign_decide})', (8, 154),
+            (255, 200, 0), 0.45)
 
-    def draw_lidar(self, view, now):
-        scale, ox, oy = 200.0, 160, 228               # px / m, car origin in the view
+    def draw_lidar(self, view):
+        scale, ox, oy = 105.0, 160, 228               # px / m (2.1 m ahead), car origin
 
         def px(x, y):
             return int(ox - y * scale), int(oy - x * scale)
 
-        for g in np.arange(0.2, 1.21, 0.2):           # 0.2 m grid
-            cv2.line(view, px(g, -0.8), px(g, 0.8), (50, 50, 50), 1)
-        for g in np.arange(-0.8, 0.81, 0.2):
-            cv2.line(view, px(0.0, g), px(1.2, g), (50, 50, 50), 1)
-        boxes = [('front', self.front_x, self.front_x + self.obstacle_dist, -self.front_half,
-                  self.front_half, self.dbg_front)]
-        for side, sign in ((LEFT, 1.0), (RIGHT, -1.0)):
-            c = sign * self.side_offset
-            boxes.append((side, self.side_x[0], self.side_x[1], c - self.side_half,
-                          c + self.side_half, self.dbg_box[side]))
+        for g in np.arange(0.2, 2.01, 0.2):
+            cv2.line(view, px(g, -1.4), px(g, 1.4), (50, 50, 50), 1)
+        for g in np.arange(-1.4, 1.41, 0.2):
+            cv2.line(view, px(0.0, g), px(2.0, g), (50, 50, 50), 1)
+        fhit = self.front_scans > 0
+        boxes = [('front', self.front_x, self.laser[0] + max(self.dodge, self.dodge2),
+                  -self.front_half,
+                  self.front_half, fhit)]
+        th = self.dbg_angle
+        for side, sign in ((LEFT, 1.0), (RIGHT, -1.0)):   # lane boxes, laid along the lane
+            c = self.dbg_shift + sign * self.side_offset
+            col = (0, 0, 255) if self.box[side] else (0, 200, 0)
+            corners = []
+            for uu, vv in ((self.side_x[0], c - self.side_half), (self.side_x[1], c - self.side_half),
+                           (self.side_x[1], c + self.side_half), (self.side_x[0], c + self.side_half)):
+                corners.append(px(uu * math.cos(th) - vv * math.sin(th),
+                                  uu * math.sin(th) + vv * math.cos(th)))
+            cv2.polylines(view, [np.array(corners, np.int32)], True, col,
+                          2 if self.box[side] else 1)
+            put(view, side, (corners[2][0] + 3, corners[2][1] + 14), col, 0.4)
         for name, x0, x1, y0, y1, hit in boxes:
             col = (0, 0, 255) if hit else (0, 200, 0)
             cv2.rectangle(view, px(x1, y1), px(x0, y0), col, 2 if hit else 1)
-            label = name
-            if (name != 'front' and self.state == MissionState.ARMED
-                    and self.side_clear_since[name] is not None):  # clear timer: ARMED only
-                label += f' {now - self.side_clear_since[name]:.1f}s'
-            put(view, label, (px(x1, y1)[0] + 3, px(x1, y1)[1] + 14), col, 0.4)
-        gx = self.laser[0] + self.guard_dist          # guard box (orange)
+            put(view, name, (px(x1, y1)[0] + 3, px(x1, y1)[1] + 14), col, 0.4)
+        # ahead clearance before a change: one lane / two lanes (from the lidar), the one a
+        # running backoff aims for drawn thick
+        for dist, label, col in ((self.dodge, 'dodge1', (0, 165, 255)),
+                                 (self.dodge2, 'dodge2', (0, 100, 255)),
+                                 (self.backoff_clear, 'chk1', (255, 255, 0)),
+                                 (self.backoff_clear2, 'chk2', (255, 0, 255))):
+            cx = self.laser[0] + dist
+            hw = self.front_half + self.guard_turn_extra
+            near_hit = self.guard_near is not None and self.guard_near < dist
+            cv2.line(view, px(cx, hw), px(cx, -hw), (0, 0, 255) if near_hit else col, 1)
+            if label.startswith('dodge'):   # dodge labels right of the box, checks left
+                put(view, f'{label} {dist:.2f}', (px(cx, -hw)[0] + 4, px(cx, -hw)[1] + 4),
+                    col, 0.33)
+            else:
+                put(view, f'{label} {dist:.2f}', (px(cx, hw)[0] - 70, px(cx, hw)[1] + 4),
+                    col, 0.33)
+        if self.phase == BACKOFF:   # where the running backoff stops
+            cx = self.laser[0] + self.backoff_need
+            hw = self.front_half
+            cv2.line(view, px(cx, hw), px(cx, -hw), (0, 255, 255), 2)
+            put(view, f'back to {self.backoff_need:.2f}', (px(cx, hw)[0] - 90, px(cx, hw)[1] - 4),
+                (0, 255, 255), 0.35)
+        gx = self.laser[0] + self.guard_dist
         gcol = (0, 0, 255) if self.guard_count else (0, 140, 255)
         cv2.rectangle(view, px(gx, self.guard_y[1]), px(self.front_x, self.guard_y[0]), gcol,
                       2 if self.guard_count else 1)
         near = f'{self.guard_near:.2f} m' if self.guard_near is not None else '-'
-        put(view, f'guard {near}', (200, 236), gcol, 0.45)
+        put(view, f'ahead {near}', (200, 236), gcol, 0.45)
+        put(view, f'boxes {self.dbg_shift * 100:+.0f}cm {math.degrees(self.dbg_angle):+.0f}deg',
+            (180, 14), (180, 180, 180), 0.4)
         x, y = self.dbg_pts
-        sel = (x > -0.1) & (x < 1.25) & (np.abs(y) < 0.85)
+        sel = (x > -0.1) & (x < 2.15) & (np.abs(y) < 1.5)
         for xi, yi in zip(x[sel], y[sel]):
             cv2.circle(view, px(xi, yi), 2, (255, 255, 255), -1)
-        cv2.rectangle(view, px(self.front_x, 0.1), px(-0.16, -0.1), (0, 255, 255), 1)  # car
-        put(view, f'obstacle x{self.obstacle_count}/{self.obstacle_scans}', (6, 236),
-            (0, 0, 255) if self.dbg_front else (180, 180, 180), 0.45)
+        cv2.rectangle(view, px(self.front_x, 0.11), px(-0.16, -0.11), (0, 255, 255), 1)
+        put(view, f'front x{self.front_scans}/{self.obstacle_scans}', (6, 236),
+            (0, 0, 255) if fhit else (180, 180, 180), 0.45)
 
     def yaw_text(self):
         n, a = self.yaw
@@ -1072,7 +906,7 @@ def main(args=None):
     node = ThreeRoadNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         # Ctrl+C also reaches us via launch: ignore repeats while cleaning up
