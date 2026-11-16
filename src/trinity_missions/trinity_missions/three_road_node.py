@@ -31,7 +31,10 @@
                object ahead: closer to the lidar than backoff_clear_dist (one lane) /
                backoff_clear_dist2 (two lanes) -> back off straight until it is not, hold
                again, decide again; else start. The checks are shorter than the dodge
-               distances, so a backed-off object still counts as ahead (no loop)
+               distances, so a backed-off object still counts as ahead (no loop).
+               Two lanes across a blocked middle lane: my lane and the middle lane object
+               both backoff_clear_mid away, else back off to that and start that same move
+               without deciding again
      turn / (mid) / counter   open loop, measured times (one or two lanes); turn AND counter
                get turn_bias_k x the sideways offset from the lane centre averaged over
                pre_stop (toward the target side: shorter, away: longer; <= turn_bias_max),
@@ -152,6 +155,7 @@ class ThreeRoadNode(MissionNode):
         d('backoff_max_sec', 5.0)
         d('backoff_clear_dist', 0.6)     # one-lane change: closer -> back off to this
         d('backoff_clear_dist2', 0.75)   # two-lane change
+        d('backoff_clear_mid', 1.0)      # two-lane change across a blocked middle lane
         # 7. guard / align
         d('guard_dist', 0.13)
         d('guard_half_width', 0.15)
@@ -214,6 +218,10 @@ class ThreeRoadNode(MissionNode):
         self.backoff_max = float(p('backoff_max_sec'))
         self.backoff_clear = float(p('backoff_clear_dist'))
         self.backoff_clear2 = float(p('backoff_clear_dist2'))
+        self.backoff_clear_mid = float(p('backoff_clear_mid'))
+        self.commit = None           # move fixed before a backoff: started without deciding again
+        self.backoff_side = None     # lane box that must be clear up to backoff_need as well
+        self.box_near = {LEFT: None, RIGHT: None}   # m from the lidar, nearest lane box point
         self.backoff_need = self.backoff_clear   # clearance the running backoff aims for
         self.guard_dist = float(p('guard_dist'))
         self.guard_half = float(p('guard_half_width'))
@@ -438,6 +446,7 @@ class ThreeRoadNode(MissionNode):
             sel = ((u > self.side_x[0]) & (u < self.side_x[1])
                    & (np.abs(v - (shift + sign * self.side_offset)) < self.side_half))
             self.box[side] = int(np.count_nonzero(sel)) >= self.side_min_points
+            self.box_near[side] = float(np.min(u[sel]) - self.laser[0]) if self.box[side] else None
         reach = self.laser[0] + max(self.dodge, self.dodge2)
         front = (x > self.front_x) & (x < reach) & \
             (np.abs(y) < self.front_half)
@@ -572,6 +581,7 @@ class ThreeRoadNode(MissionNode):
         self.plan = []
         self.judge = None
         self.after_backoff = None
+        self.commit = self.backoff_side = None
         self.guard_count = 0
 
     def start_pre_stop(self, now, why):
@@ -579,8 +589,9 @@ class ThreeRoadNode(MissionNode):
         self.centre_samples = []
         self.set_phase(PRE_STOP, f'{why}, hold {self.pre_stop:.1f} s')
 
-    def start_backoff(self, now, after, why, need=None):
+    def start_backoff(self, now, after, why, need=None, commit=None, side=None):
         self.after_backoff = after
+        self.commit, self.backoff_side = commit, side
         self.backoff_need = self.backoff_clear if need is None else need
         self.phase_since = now
         self.set_phase(BACKOFF, why)
@@ -588,27 +599,42 @@ class ThreeRoadNode(MissionNode):
     def try_start(self, now):
         """Stopped long enough: decide again, back off when too close for that change
         (one / two lanes), else change."""
-        move = self.decide()
+        committed, self.commit = self.commit, None
+        move = committed or self.decide()
         bl = sorted(self.blocked_lanes())
         wait = ''
         if move is None and self.lane in (1, 3) and 2 in self.side_blocked() \
                 and self.front_near is not None and self.front_near < self.dodge2:
             wait = f' (lane 2 blocked: straight to {self.dodge:.2f})'
         self.decision = (f'lane {self.lane} home {self.home} blocked {bl or "-"} -> '
-                         + (f'{move[0]} to {move[1]}' if move else 'stay') + wait)
+                         + (f'{move[0]} to {move[1]}' if move else 'stay') + wait
+                         + (' (fixed before the backoff)' if committed else ''))
         if move is None:
             self.request = None
             self.finish(f'{self.decision}: lane follow')
             return
         side, target = move
-        # two lanes with the middle blocked started at dodge (not dodge2): one-lane clearance
-        two_far = abs(target - self.lane) == 2 and 2 not in self.side_blocked()
-        need = self.backoff_clear2 if two_far else self.backoff_clear
-        if self.guard_near is not None and self.guard_near < need:
-            self.start_backoff(now, PRE_STOP, f'{side} to {target}: object '
-                                              f'{self.guard_near:.2f} m < {need:.2f} m, '
-                                              f'back off to {need:.2f} m', need)
-            return
+        two = abs(target - self.lane) == 2
+        if committed:
+            pass                                    # backed off for this move: go
+        elif two and 2 in self.side_blocked():
+            # across a blocked middle lane: my lane AND the middle lane object at least
+            # backoff_clear_mid away. That is beyond the dodge distance, so the move is fixed
+            # (deciding again after the backoff would say 'stay' and drive back: loop)
+            need = self.backoff_clear_mid
+            near = [d for d in (self.guard_near, self.box_near[side]) if d is not None]
+            if near and min(near) < need:
+                self.start_backoff(now, PRE_STOP, f'{side} to {target} across lane 2: object '
+                                                  f'{min(near):.2f} m < {need:.2f} m, back off '
+                                                  f'to {need:.2f} m', need, commit=move, side=side)
+                return
+        else:
+            need = self.backoff_clear2 if two else self.backoff_clear
+            if self.guard_near is not None and self.guard_near < need:
+                self.start_backoff(now, PRE_STOP, f'{side} to {target}: object '
+                                                  f'{self.guard_near:.2f} m < {need:.2f} m, '
+                                                  f'back off to {need:.2f} m', need)
+                return
         self.request = move
         self.orig_lane = self.lane
         if abs(target - self.lane) == 2:
@@ -700,6 +726,9 @@ class ThreeRoadNode(MissionNode):
                 self.try_start(now)
         elif ph == BACKOFF:
             clear = self.guard_near is None or self.guard_near >= self.backoff_need
+            if self.backoff_side is not None:       # the lane to cross as well
+                bn = self.box_near[self.backoff_side]
+                clear = clear and (bn is None or bn >= self.backoff_need)
             if (age >= self.backoff_min and clear) or age >= self.backoff_max:
                 self.publish(0.0, 0.0)
                 self.guard_count = 0

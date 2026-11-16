@@ -36,7 +36,7 @@ three_road_node:
     dodge_dist: 0.7                        # m from the lidar: object ahead closer -> one-lane dodge
     dodge_dist2: 1.0                       # m from the lidar: ... -> two-lane dodge (front box reach);
                                            #    middle lane blocked: dodge_dist (go on straight, maybe
-                                           #    it frees -> one lane), then two lanes with backoff_clear_dist
+                                           #    it frees -> one lane), then two lanes after backoff_clear_mid
     front_half_width: 0.15                 # m
     obstacle_scans: 3                      # scans in a row
     side_offset: 0.5                       # m, next lane centre from my lane centre (lane width)
@@ -72,6 +72,9 @@ three_road_node:
     backoff_clear_dist: 0.6                # m from the lidar, before a one-lane change: closer ->
                                            #    back off to this (< dodge_dist: still 'ahead', no loop)
     backoff_clear_dist2: 0.7              # m from the lidar, before a two-lane change (< dodge_dist2)
+    backoff_clear_mid: 1.0                 # m from the lidar, two lanes across a blocked lane 2: my
+                                           #    lane AND the lane 2 object this far, else back off to
+                                           #    it and do that same move (not decided again)
     backoff_speed: -0.2                    # m/s, straight
     backoff_min_sec: 0.5
     backoff_max_sec: 5.0                   # the lidar does not see behind

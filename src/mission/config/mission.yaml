@@ -5,7 +5,7 @@ lane_follow_node:
     camera_info_topic: /camera/color/camera_info
     debug_bev_topic: /debug_bev
     debug_roi_topic: /debug_roi       # BEV lane mask ROI (mono8, no grid)
-    roi_top_ratio: 0.7           # cut this fraction off the top (far side) of the BEV
+    roi_top_ratio: 0.6           # cut this fraction off the top (far side) of the BEV
     run_rate_hz: 30.0
     grid_step: 0.1                  # m, grid spacing on /debug_bev
 
