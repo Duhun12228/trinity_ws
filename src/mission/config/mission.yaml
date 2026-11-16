@@ -5,7 +5,7 @@ lane_follow_node:
     camera_info_topic: /camera/color/camera_info
     debug_bev_topic: /debug_bev
     debug_roi_topic: /debug_roi       # BEV lane mask ROI (mono8, no grid)
-    roi_top_ratio: 0.6           # cut this fraction off the top (far side) of the BEV
+    roi_top_ratio: 0.5           # cut this fraction off the top (far side) of the BEV
     run_rate_hz: 30.0
     grid_step: 0.1                  # m, grid spacing on /debug_bev
 
@@ -65,14 +65,14 @@ lane_follow_node:
     base_speed: 0.8          # m/s
     steer_k: 1.0                  # 1/m, cross-track gain
     yaw_k: 1.5
-    max_steer: 0.983                # rad: w = 1.5 at 0.2 m/s, full steering (limit lifted)
+    max_steer: 0.6                # rad: w = 1.5 at 0.2 m/s, full steering (limit lifted)
     steer_smoothing_alpha: 1.0
     steer_slowdown_ratio: 0.35
     min_smooth_speed: 0.25          # m/s, slowdown floor (never above the target speed)
     min_stanley_speed: 0.1          # m/s, floor of v in atan2(k*e, v)
-    wheelbase: 0.2                 # m
+    wheelbase: 0.23                 # m
     center_smooth: 0.30             # m, centre path moving average (zigzag/jitter vs corner sharpness)
-    near_span: 0.06                 # m, near heading = path direction over this length
-    lookahead_dist: 0.20            # m, look-ahead heading point along the centre path
+    near_span: 0.02                 # m, near heading = path direction over this length
+    lookahead_dist: 0.3            # m, look-ahead heading point along the centre path
     lookahead_weight: 0.5           # share of the look-ahead heading in yaw
     center_offset: 0.0 #-0.06            # m, drive beside the centre path (+ left / - right): 6 cm right

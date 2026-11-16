@@ -31,6 +31,7 @@ from std_msgs.msg import Float32MultiArray, String
 from trinity_msgs.msg import MasterMode
 
 from mission.ipm import (DEFAULT_GEOMETRY, DEFAULT_INTRINSICS, IPM, draw_grid,
+                         draw_lane_widths,
                          intrinsics_from_camera_info, scale_intrinsics)
 from mission.lane_detect import DEFAULT_LANE_PARAMS, SlidingWindowLaneDetector
 from mission.lane_filter import DEFAULT_FILTER_PARAMS, DrivableLaneFilter
@@ -313,8 +314,10 @@ class LaneFollowNode(Node):
         return vis
 
     def make_debug_bev(self, bev):
-        """BEV mask + distance grid (BGR) for visual checking."""
-        return draw_grid(bev, self.ipm, self.grid_step)
+        """BEV mask + distance grid (BGR), x2, with the lane width per distance (pitch check)."""
+        return draw_lane_widths(draw_grid(bev, self.ipm, self.grid_step), bev, self.ipm,
+                                lane_width=self.lane_tracker.p['lane_width']
+                                if hasattr(self, 'lane_tracker') else 0.5)
 
     @staticmethod
     def to_image_msg(img, header):

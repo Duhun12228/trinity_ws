@@ -194,3 +194,68 @@ def draw_grid(bev, ipm, step=0.1, label_every=0.5):
             color = (90, 90, 90)
         cv2.line(vis, (u, 0), (u, h - 1), color, 1)
     return vis
+
+
+def lane_widths(bev, ipm, xs=(0.3, 0.5, 0.7, 0.9, 1.1, 1.3), band=2):
+    """Pitch check: at each distance X, the lane pixel run nearest the car centre on the left
+    and on the right (centres of the runs, rows X +- band px). Returns [(X, v, u_left,
+    u_right)] for the rows where both are seen."""
+    h, w = bev.shape[:2]
+    uc, _ = ipm.ground_to_bev(0.0, 0.0)
+    out = []
+    for X in xs:
+        _, v = ipm.ground_to_bev(X, 0.0)
+        v = int(round(v))
+        if v - band < 0 or v + band >= h:
+            continue
+        cols = np.flatnonzero(bev[v - band:v + band + 1].any(axis=0))
+        if len(cols) == 0:
+            continue
+        splits = np.flatnonzero(np.diff(cols) > 1)
+        starts = np.concatenate([[cols[0]], cols[splits + 1]])
+        ends = np.concatenate([cols[splits], [cols[-1]]])
+        centres = (starts + ends) / 2.0
+        left, right = centres[centres < uc], centres[centres > uc]
+        if len(left) and len(right):
+            out.append((X, v, float(left.max()), float(right.min())))
+    return out
+
+
+def draw_lane_widths(vis, bev, ipm, scale=2, lane_width=0.5):
+    """Upscale the BEV debug image and write the lane width (cm / BEV px) at each distance;
+    a pitch hint from the near vs far width (lines spread apart far away -> the camera looks
+    down more than pitch_deg says -> raise it)."""
+    vis = cv2.resize(vis, (vis.shape[1] * scale, vis.shape[0] * scale),
+                     interpolation=cv2.INTER_NEAREST)
+    rows = lane_widths(bev, ipm)
+    r = ipm.resolution
+    for X, v, ul, ur in rows:
+        wpx = ur - ul
+        y = int(round(v * scale))
+        cv2.line(vis, (int(round(ul * scale)), y), (int(round(ur * scale)), y), (255, 0, 255), 2)
+        cv2.putText(vis, f'{wpx * r * 100:.0f}cm {wpx:.0f}px', (int(round(ul * scale)) + 4, y - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1, cv2.LINE_AA)
+    if len(rows) >= 2:
+        near, far = rows[0], rows[-1]
+        wn, wf = (near[3] - near[2]) * r, (far[3] - far[2]) * r
+        d = wf - wn
+        mean = sum((q[3] - q[2]) * r for q in rows) / len(rows)
+        if abs(d) >= 0.02:
+            hint = 'far wider: raise pitch_deg' if d > 0 else 'far narrower: lower pitch_deg'
+        elif abs(mean - lane_width) >= 0.02:     # same everywhere: scale -> height
+            hint = (f'pitch ok, all {mean * 100:.0f}cm: '
+                    + ('raise cam_height' if mean < lane_width else 'lower cam_height'))
+        else:
+            hint = 'pitch / height ok'
+
+        txt = (f'width {wn * 100:.0f}cm @{near[0]:.1f}m -> {wf * 100:.0f}cm @{far[0]:.1f}m '
+               f'(lane {lane_width * 100:.0f}cm)')
+    else:
+        txt, hint = 'lane width: need both lines', 'park parallel on a straight lane'
+    h = vis.shape[0]
+    for i, t in enumerate((txt, hint)):
+        cv2.putText(vis, t, (6, h - 26 + 18 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(vis, t, (6, h - 26 + 18 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (255, 255, 255), 1, cv2.LINE_AA)
+    return vis

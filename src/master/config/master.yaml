@@ -6,6 +6,13 @@ master_node:
     set_mode_topic: /master/set_mode      # manual switch (String): normal/slow/crosswalk/3road/cone/parking
     run_rate_hz: 30.0
     cmd_timeout: 0.3                      # s, any cmd older than this counts as missing -> stop
+    # Steering alignment: every final /cmd_vel gets this steering angle added (Ackermann:
+    # angle = atan(w L / v), + trim, clipped to max_steer, back to w; v = 0 unchanged).
+    # Measured 2026-11-17 at 0.2 m/s: w = 0 curves left (curvature +0.09 1/m, ~1.1-1.5 deg
+    # wheel offset, left/right yaw rate 0.368 / 0.320 at full steer); -0.046 -> +0.015 1/m.
+    steer_trim: -0.046                    # rad, + = left, 0 = off
+    wheelbase: 0.2                        # m, same as the mission nodes
+    max_steer: 0.983                      # rad
 
     # Missions (parallel lists, one entry per mission node)
     missions:             [slow, crosswalk, cone, 3road, parking]

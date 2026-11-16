@@ -26,15 +26,15 @@ three_road_node:
     reenter_grace_sec: 0.0                 # s after the section ended: lane 1 / 3 may re-enter
     zone_exit_sec: 4.0                     # s without a side lane -> section over
     align_pause_max: 5.0                   # s, not-parallel time (corner) pauses the exit timer
-    section_speed: 0.2                     # m/s, lane follow cap inside the section
+    section_speed: 0.4                     # m/s, lane follow cap inside the section (was 0.3)
 
     # 3. obstacles per lane (base_link: x forward, y left)
     laser_x: 0.103
     laser_y: 0.0
     laser_yaw: 0.0
     front_x: 0.16                          # m, front bumper
-    dodge_dist: 0.7                        # m from the lidar: object ahead closer -> one-lane dodge
-    dodge_dist2: 1.0                       # m from the lidar: ... -> two-lane dodge (front box reach);
+    dodge_dist: 0.95                       # m from the lidar: object ahead closer -> one-lane dodge
+    dodge_dist2: 1.15                      # m from the lidar: ... -> two-lane dodge (front box reach);
                                            #    middle lane blocked: dodge_dist (go on straight, maybe
                                            #    it frees -> one lane), then two lanes after backoff_clear_mid
     front_half_width: 0.15                 # m
@@ -53,12 +53,82 @@ three_road_node:
     # 5. signs (inside the section): A + B frames >= this -> the more seen one sets home
     sign_left_class: sign_A                # -> home lane 1
     sign_right_class: sign_B               # -> home lane 3
-    sign_conf: 0.7
-    sign_decide_frames: 15
+    sign_conf: 0.7                         # 2026-11-17 사용자 요청 0.3 -> 0.7 (0.5 넘는 건 약 1.3 m 앞부터, 0.7 은 더 가까이)
+                                           #    only ~1.3 m before it > 0.5 -> decided too late, never the wrong class)
+    sign_ratio: 0.8                        # the winner needs this share of the A + B frames
+    sign_decide_frames: 6                  # A + B frames (more seen one wins)
+    sign_pre_sec: 15.0                     # s, signs seen this long before the section count too
+    # lane 2 ends at the island with the sign (A road left, B road right): never end in lane 2
+    sign_wait_dist: 2.5                    # m in the section without an A / B sign -> fallback goal lane
+    # yellow island (lane 2 end, the sign on its tip): never drive into it. Tip island_dist m along
+    # the lane from the section entry (bag 05:10: 4.4 .. 4.9 m), an object for every curve
+    island_on: true
+    island_dist: 4.35
+    island_half: 0.20                      # m, half width (lane 2 between the dashed lines)
+    island_taper: 0.25                     # m from the tip to the full width
+    island_len: 1.5
+    sign_fallback_ahead: 1.3               # m before the island tip without a sign: fallback goal lane
+                                           #    (until then lane 2 is kept: the sign straight ahead, both roads one lane away)
+    island_past: 0.6                       # m after the estimated tip: no more lane changes
+    island_backoff_max: 0.6                # m per backoff when only the island blocks the curve (0.8 -> 0.6)
+    island_budget: 0.6                     # m more reversing per section for that (1.2 -> 0.6)
+    island_slow_dist: 2.2                  # m before the tip without a sign / outside the sign lane:
+    island_slow_speed: 0.25                #    lane follow this slow
+    sign_default_lane: 0                   # 1 (A) / 3 (B) / 0 auto: the side lane the car is in, from
+                                           #    lane 2 the free side (both free: lane 1)
 
     # 6. lane change: pre_stop -> ahead check (back off) -> turn / (mid) / counter ->
     #    post_stop -> judge standing -> decide again
-    pre_stop_sec: 0.5                      # s, hold before every change
+    pre_stop_sec: 0.2                      # s, hold before every change (0.5 -> 0.2, sim 2026-11-17: same gaps, -1.6 s)
+    change_mode: path                      # path: S curve + pure pursuit on odom / timed: steps below
+    odom_topic: /odometry/filtered         # EKF wheel + IMU (the wheel /odom yaw is ~2x too large)
+    odom_timeout: 0.3                      # s, older pose = no odom -> timed fallback / stop
+    lane_width: 0.5                        # m, lateral shift per lane
+    path_len1: 1.3                         # m along the lane, one-lane S curve (real min radius
+                                           #    ~0.6 m: quintic max curvature 5.8 x shift / len^2)
+    path_len2: 1.9                         # m, two-lane S curve
+    path_min_len: 0.6                      # m, shortest curve tried
+    path_kmax: 1.7                         # 1/m, curvature limit of a shorter curve
+    obj_padding: 0.10                      # m, gap kept between the car body and the object in my
+                                           #    lane along the curve: shorter curve, else back off
+                                           #    (needs the object ~0.72 m away for 10 cm, ~0.80 m
+                                           #    for 15 cm: keep dodge_dist above that + 0.03)
+    obj_depth: 0.30                        # m, assumed object depth behind its seen face (bag 03:12:
+                                           #    the lane 2 boxes were ~0.5 m long; seen side faces are
+                                           #    remembered in odom, omem_*)
+    car_half_width: 0.11                   # m
+    car_rear: 0.16                         # m, base_link to the rear bumper
+    path_backoff_step: 0.10                # m, padding not kept: back off this much more (up to
+                                           #    dodge_dist - 0.03), then go anyway
+    path_ext: 0.5                          # m straight after the curve (look-ahead room)
+    path_lookahead: 0.30                   # m, pure pursuit look-ahead
+    path_w_gain: 2.0                       # cmd w = gain x v x curvature (bag 03:12: the car turns 0.57 x the command)
+    path_end_tol: 0.03                     # m, done this short of the curve end -> post_stop
+    path_max_sec_scale: 2.0                # x nominal time -> give up (stop, judge)
+    path_speed: 0.4                        # m/s on the path (world sim 2026-11-17 v4: 0.4 + gain 2.0 passes the bag course,
+                                           #    gap >= 10 cm, line margin >= 12 cm; 0.3 -> 0.35 -> 0.4 if unsure)
+                                           #    gain 1.2; 0.4 ends up to 10 deg off). The timed steps
+                                           #    keep change_speed 0.2 (their times were measured at it)
+    path_over_max: 0.04                    # m, the curve may pass the target line by this at most
+    path_edge_bias: 0.03                   # m, target lane 1 / 3: aim this much toward lane 2
+    path_backoff_tries: 2                  # backoffs (<= path_backoff_max each) for a clear curve,
+                                           #    then the widest gap is driven (the guard watches)
+    path_k_soft: 1.2                       # 1/m, gentlest S curve tried (.. path_kmax)
+    path_th_max_deg: 55.0                  # deg, steepest heading across the lanes
+    path_th_steep_deg: 70.0                # deg, second limit tried (tight rows, two lanes)
+    path_lead_max: 0.5                     # m, straight lead-in before the curve: 0 .. this is tried
+    path_gap_good: 0.20                    # m, body gap above this is not better -> gentlest curve
+    path_end_clear: 0.35                   # m straight in the target lane after the curve: free too
+    path_backoff_max: 0.4                  # m, backing off for a clear curve: at most this far
+    backoff_max_dist: 0.45                 # m, any other backoff: at most this far (odom)
+    cy_ref_x: 0.43                         # m ahead of base_link where lane_follow measures the centre
+    lmap_min: 8                            # lane map (lane 2 centre line in odom): samples needed
+    lmap_fit_span: 0.8                     # m of travel before the fitted line replaces the camera heading
+    omem_keep: 20.0                        # s, lidar points remembered in odom (objects beside / behind
+                                           #    the car are out of the lidar's +-60 deg view)
+    omem_fov_deg: 55.0                     # deg, remembered points outside this half angle are used
+    path_resume_max: 2                     # guard abort on the path: new curve to the same target
+                                           #    line from odom (not a fresh plan from a tilted car)
     turn_bias_k: 2.0                       # s per m: turn AND counter time + k x offset from the lane
                                            #    centre (measured during pre_stop; toward the target:
                                            #    shorter; both together so the car ends parallel)
@@ -72,10 +142,10 @@ three_road_node:
     backoff_clear_dist: 0.6                # m from the lidar, before a one-lane change: closer ->
                                            #    back off to this (< dodge_dist: still 'ahead', no loop)
     backoff_clear_dist2: 0.7              # m from the lidar, before a two-lane change (< dodge_dist2)
-    backoff_clear_mid: 1.0                 # m from the lidar, two lanes across a blocked lane 2: my
+    backoff_clear_mid: 1.3                 # m from the lidar, two lanes across a blocked lane 2: my
                                            #    lane AND the lane 2 object this far, else back off to
                                            #    it and do that same move (not decided again)
-    backoff_speed: -0.2                    # m/s, straight
+    backoff_speed: -0.2                    # m/s, straight (gentle: the lidar does not see behind)
     backoff_min_sec: 0.5
     backoff_max_sec: 5.0                   # the lidar does not see behind
     change_speed: 0.2                      # m/s
@@ -93,8 +163,18 @@ three_road_node:
     right2_counter_sec: 3.0
 
     # 7. guard (last resort): object closer than guard_dist to the LIDAR while moving forward
-    guard_dist: 0.13                       # m, from the lidar
-    guard_half_width: 0.15                 # m
+    guard_dist: 0.25                       # m, from the lidar (0.13 -> 0.25, 2026-11-17: the bumper is
+                                           #    0.057 m ahead of the lidar; 04:28 run touched an object)
+    guard_dist_path: 0.18                  # m, while a curve is driven (it keeps obj_padding already)
+    rear_clear: 0.20                       # m behind the rear bumper kept free when backing (0.10 -> 0.20, 05:43 bag:
+                                           #    backoffs stopped by the passed box behind, again and again)
+    rear_free_min: 0.15                    # m of room behind (after rear_clear) needed to start a backoff
+    rev_rearm_dist: 0.6                    # m forward after a backoff stopped by an object behind before backing again
+    backoff_budget: 1.0                    # m reversed per section at most for curve backoffs
+    hold_max_sec: 3.0                      # s stopped waiting for a clear curve (my lane blocked), then lane follow
+    edge_margin: 0.05                      # m, body corners inside the outer yellow lines on a curve
+    side_pass_dist: 0.6                    # m, lane 2 object nearer than this is still the dodge from the goal lane
+    guard_half_width: 0.16                 # m
     guard_turn_extra: 0.10                 # m, during a change the box widens to the turning side
     guard_min_points: 2
     guard_scans: 2

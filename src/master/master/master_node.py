@@ -25,6 +25,7 @@ Command
            gap) /stanley_cmd_vel, and a stop if nothing comes within gap_timeout.
   Any command older than cmd_timeout counts as missing -> stop.
 """
+import math
 import signal
 
 from geometry_msgs.msg import Twist
@@ -51,6 +52,21 @@ def limit_speed(cmd, v_max):
     out = Twist()
     out.linear.x = v_max
     out.angular.z = cmd.angular.z * v_max / cmd.linear.x
+    return out
+
+
+def apply_steer_trim(cmd, trim, wheelbase, max_steer):
+    """Add a steering angle offset to the final command (wheel alignment): the angle of
+    (v, w) for an Ackermann car, + trim, clipped to +-max_steer, back to w. v = 0 or
+    trim = 0: unchanged (a stop stays a stop)."""
+    v = cmd.linear.x
+    if trim == 0.0 or abs(v) < 1e-3:
+        return cmd
+    delta = math.atan(cmd.angular.z * wheelbase / v) + trim
+    delta = max(-max_steer, min(max_steer, delta))
+    out = Twist()
+    out.linear.x = v
+    out.angular.z = v * math.tan(delta) / wheelbase
     return out
 
 
@@ -81,6 +97,9 @@ class MasterNode(Node):
         self.declare_parameter('set_mode_topic', '/master/set_mode')
         self.declare_parameter('run_rate_hz', 30.0)
         self.declare_parameter('cmd_timeout', 0.3)
+        self.declare_parameter('steer_trim', 0.0)      # rad, added to every final command
+        self.declare_parameter('wheelbase', 0.2)
+        self.declare_parameter('max_steer', 0.983)
         # missions (parallel lists)
         self.declare_parameter('missions', ['slow'])
         self.declare_parameter('mission_state_topics', ['/mission/slow/state'])
@@ -112,6 +131,9 @@ class MasterNode(Node):
         self.set_mode_topic = p('set_mode_topic').value
         self.run_rate_hz = float(p('run_rate_hz').value)
         self.cmd_timeout = float(p('cmd_timeout').value)
+        self.steer_trim = float(p('steer_trim').value)
+        self.wheelbase = float(p('wheelbase').value)
+        self.max_steer = float(p('max_steer').value)
         self.gap_timeout = float(p('gap_timeout').value)
         self.state_timeout = float(p('mission_state_timeout').value)
         self.idle_grace = float(p('mission_idle_grace').value)
@@ -240,6 +262,7 @@ class MasterNode(Node):
             self.arbitrate(now)
             cmd = self.select_cmd(now)
             self.periodic_summary(now, statuses)
+        cmd = apply_steer_trim(cmd, self.steer_trim, self.wheelbase, self.max_steer)
         self.last_cmd = cmd
         self.pub_cmd.publish(cmd)
         if self.t_last_mode_pub is None or now - self.t_last_mode_pub >= 1.0:
