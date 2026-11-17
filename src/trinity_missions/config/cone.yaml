@@ -90,3 +90,26 @@ cone_node:
     lane_ok_states: [both]                 # /lane_follow/state values counted as "lane back"
     input_timeout: 0.5                     # s, older inputs count as missing
     cooldown: 3.0                          # s, no re-entry after leaving [cone]
+
+    # ---- ji2 (2026-11-17): drive_mode path = cone map + planned path (cone_path.py) ----
+    # reactive: the trinity corridor follower above (original). path: cones kept in odom,
+    # corridor centre traced, short paths checked against every cone with the car body, the
+    # chosen one tracked; after the last cone into the yellow lane before lane_follow.
+    drive_mode: path
+    odom_topic: /odometry/filtered
+    yaw_topic: /lane_follow/yaw
+    v_max: 0.30                            # m/s (0.35 -> 0.30, 08:23 run: 2 cones touched)
+    v_min: 0.25                            # m/s, tight spots
+    plan_gap_min: 0.03                     # m, car body to cone base (cone_body_r)
+    cone_body_r: 0.08
+    corr_width: 0.60                       # m, cone centres across (bag 07:10: 0.55 .. 0.65)
+    centre_offset: -0.04                   # m, follow 4 cm right of the corridor middle (+ left, - right); 2026-11-17 user: left cones too close
+    track_gain: 2.3                        # the car turns ~0.5 x the command (3road bags); 2.3 tracks tighter (sim)
+    track_lookahead: 0.20
+    way_in_off: 0.20                       # m, before the corridor: path this far off its centre line -> back off
+    way_back: 0.25
+    backs_max: 3
+    exit_speed: 0.20
+    exit_ok_cy: 0.12                       # m, lane centre at the car within this + heading within
+    exit_ok_yaw: 20.0                      #    exit_ok_yaw -> DONE (lane_follow takes the curves)
+    exit_align_max: 8.0

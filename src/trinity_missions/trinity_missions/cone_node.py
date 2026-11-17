@@ -59,22 +59,25 @@ import math
 import signal
 
 from geometry_msgs.msg import Point, Twist
+from nav_msgs.msg import Odometry
 import numpy as np
 import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import Float32MultiArray, String
 from trinity_msgs.msg import MissionState
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import Marker, MarkerArray
 
+from trinity_missions.cone_path import ConePathMixin, declare_path_params
 from trinity_missions.mission_base import MissionNode
 
 TRACK, LOST, BACKOFF = 'track', 'lost', 'backoff'
 ESCAPE, ESCAPE_FWD = 'escape', 'escape_fwd'   # reverse / forward half of the escape S
 
 
-class ConeNode(MissionNode):
+class ConeNode(ConePathMixin, MissionNode):
+    MS = MissionState
 
     def __init__(self):
         super().__init__('cone_node', 'cone')
@@ -145,6 +148,7 @@ class ConeNode(MissionNode):
         d('exit_no_cone_sec', 2.0)
         d('lane_ok_states', ['both'])
         d('input_timeout', 0.5)
+        declare_path_params(d)           # ji2: drive_mode 'path' (cone_path.py)
 
         p = lambda name: self.get_parameter(name).value  # noqa: E731
         self.frame_id = p('frame_id')
@@ -198,6 +202,7 @@ class ConeNode(MissionNode):
         self.exit_no_cone = float(p('exit_no_cone_sec'))
         self.lane_ok = set(p('lane_ok_states'))
         self.input_timeout = float(p('input_timeout'))
+        self.init_path(p)
 
         self.points = np.zeros((0, 2))   # newest scan in base_link
         self.scan_at = None
@@ -216,6 +221,10 @@ class ConeNode(MissionNode):
         self.create_subscription(Detection2DArray, p('detections_topic'),
                                  self.detections_callback, qos_profile_sensor_data)
         self.create_subscription(String, p('lane_state_topic'), self.lane_state_callback, 10)
+        if self.drive_mode == 'path':
+            self.create_subscription(Odometry, p('odom_topic'), self.odom_callback, 10)
+            self.create_subscription(Float32MultiArray, p('yaw_topic'), self.yaw_callback, 10)
+            self.get_logger().info('drive_mode path: cone map + planned path (cone_path.py)')
         self.pub_cmd = self.create_publisher(Twist, p('cmd_topic'), 10)
         self.pub_debug = self.create_publisher(MarkerArray, p('debug_topic'), 1)
         self.get_logger().info(
@@ -254,7 +263,11 @@ class ConeNode(MissionNode):
         self.scan_at = now
         self.clusters = self.find_clusters(x, y, ok)
         if self.active and self.state == MissionState.RUNNING:
-            self.step(now)
+            if self.drive_mode == 'path':
+                self.path_scan(now, x, y, ok)
+                self.path_debug(now)
+            else:
+                self.step(now)
 
     def detections_callback(self, msg):
         now = self.now()
@@ -596,6 +609,9 @@ class ConeNode(MissionNode):
     def tick(self, now):
         if self.state == MissionState.REQUEST and now - self.request_at > self.request_timeout:
             self.set_state(MissionState.IDLE, f'not granted within {self.request_timeout:.0f} s')
+        if self.drive_mode == 'path':
+            self.path_tick(now)
+            return
         if self.state != MissionState.RUNNING or not self.active:
             return
         if self.backoff_until is not None and now < self.backoff_until:
@@ -629,6 +645,7 @@ class ConeNode(MissionNode):
 
     def on_start(self, now):
         self.reset_run()
+        self.reset_path()
         self.set_phase(TRACK, 'start')
 
     # ------------------------------------------------------------------- debug
@@ -672,6 +689,44 @@ class ConeNode(MissionNode):
                       Point(x=0.0, y=-self.roi_y_half)]
         arr.markers = [cones, pairs, mids, lrow, rrow, line, target, box, roi]
         self.pub_debug.publish(arr)
+
+
+def _path_debug(self, now):
+    """Markers of the path mode (base_link): map cones, centre line, chosen path; and a
+    plan line in the log at 2 Hz for the bag analysis."""
+    pa = self.cpath
+    if pa is not None and now - getattr(self, '_plan_log_at', 0.0) >= 0.5:
+        self._plan_log_at = now
+        self.get_logger().info(f'plan v {pa["v"]:.2f} k {pa["k1"]:+.1f}/{pa["k2"]:+.1f} gap '
+                               f'{pa["gap"] * 100:.0f} cm centre {pa["n_cl"]} pts cones {len(self.cmap)}')
+    if self.pub_debug.get_subscription_count() == 0 or not self.odom_fresh(now):
+        return
+    arr = MarkerArray()
+    stamp = self.get_clock().now().to_msg()
+
+    def marker(mid, mtype, rgb, scale, pts):
+        m = Marker()
+        m.header.frame_id, m.header.stamp = self.frame_id, stamp
+        m.ns, m.id, m.type, m.action = 'cone_path', mid, mtype, Marker.ADD
+        m.scale.x = m.scale.y = m.scale.z = scale
+        m.color.r, m.color.g, m.color.b, m.color.a = (*rgb, 1.0)
+        m.pose.orientation.w = 1.0
+        m.points = [Point(x=float(a), y=float(b)) for a, b in pts]
+        return m
+
+    C = self.cones_car(now)
+    X, Y, H = self.odom
+    path = []
+    if pa is not None:
+        dx, dy = pa['pts'][:, 0] - X, pa['pts'][:, 1] - Y
+        path = list(zip(math.cos(H) * dx + math.sin(H) * dy, -math.sin(H) * dx + math.cos(H) * dy))
+    arr.markers = [marker(10, Marker.SPHERE_LIST, (1.0, 0.5, 0.0), 0.08, C),
+                   marker(11, Marker.LINE_STRIP, (1.0, 1.0, 1.0), 0.02, self.centre),
+                   marker(12, Marker.LINE_STRIP, (0.0, 1.0, 1.0), 0.02, path)]
+    self.pub_debug.publish(arr)
+
+
+ConeNode.path_debug = _path_debug
 
 
 def main(args=None):
