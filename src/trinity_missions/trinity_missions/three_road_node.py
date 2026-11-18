@@ -156,6 +156,8 @@ class ThreeRoadNode(MissionNode):
         # the lane from where the section was entered (bag 05:10: sign 4.4 .. 4.9 m), lane 2
         # centre; widens from the tip to island_half over island_taper m. It is an object for
         # every curve; a curve it blocks may back off farther (island_backoff_*)
+        d('path_abort_frac', 0.3)        # a curve leading away from a new sign goal: abort up to
+                                         #    this share of it (still near the start lane)
         d('island_on', True)
         d('island_dist', 4.35)
         d('island_half', 0.20)
@@ -301,6 +303,7 @@ class ThreeRoadNode(MissionNode):
         self.sign_default = int(p('sign_default_lane'))
         self.sign_ratio = float(p('sign_ratio'))
         self.island_on = bool(p('island_on'))
+        self.path_abort_frac = float(p('path_abort_frac'))
         self.island_dist = float(p('island_dist'))
         self.island_half = float(p('island_half'))
         self.island_taper = max(float(p('island_taper')), 0.01)
@@ -832,6 +835,9 @@ class ThreeRoadNode(MissionNode):
                 return self.home        # keep lane 2 (sign straight ahead, both roads one lane)
             if self.sign_default in (1, 3):
                 g = self.sign_default
+            elif self.state == MissionState.RUNNING and self.phase == PATH and \
+                    self.request is not None and self.request[1] in (1, 3):
+                g = self.request[1]         # on the way to an outer lane: that one
             elif self.lane in (1, 3):
                 g = self.lane
             else:
@@ -995,6 +1001,19 @@ class ThreeRoadNode(MissionNode):
         """Stopped long enough: decide again, back off when too close for that change
         (one / two lanes), else change."""
         committed, self.commit = self.commit, None
+        if committed is not None and self.lane is not None:
+            goal = self.goal_lane()
+            mine_blocked = self.front_near is not None and self.front_near < self.dodge
+            # ...unless it dodges an object right ahead in my lane (2026-11-18 12:14: lane 3
+            # blocked, goal 3 -> 'left to 2' dropped 14 x, stuck in front of the object)
+            if goal in (1, 3) and abs(committed[1] - goal) > abs(self.lane - goal) \
+                    and not mine_blocked:
+                # the move was fixed before the backoff; the goal (sign) changed since and it
+                # would now lead away from it (2026-11-17 10:30: lane 1 reached, sign A came,
+                # the old 'right to 3' still ran -> B road): decide again
+                self.get_logger().info(f'{committed[0]} to {committed[1]} dropped: goal lane '
+                                       f'{goal} now (lane {self.lane})')
+                committed = None
         move = committed or self.decide()
         bl = sorted(self.blocked_lanes())
         wait = ''
@@ -1117,6 +1136,7 @@ class ThreeRoadNode(MissionNode):
         txt = self.path_text(self.path)
         self.pad_backoffs = self.resumes = 0
         self.get_logger().info(f'{side} to lane {target}: {txt}')
+        self.path['goal'] = self.goal_lane()    # the goal this curve was chosen for
         self.set_phase(PATH, f'{self.decision}, {txt}')
 
     def path_options(self, move, cy, now, any_lane=False):
@@ -1125,8 +1145,15 @@ class ThreeRoadNode(MissionNode):
         lane, goal = self.lane, self.goal_lane()
         # other lanes only if they end no farther from the goal lane than the decided move
         # (a curve to the far side would have to come back two lanes before the island)
+        # any_lane (nothing else clear): still never a lane farther from the goal lane (A / B
+        # road) than the car is now, unless my lane is blocked right ahead (2026-11-17 09:1x:
+        # goal 3, the lane-3 curve blocked -> it went to lane 1 = the A road)
+        mine_blocked = self.front_near is not None and self.front_near < self.dodge
+        away_ok = goal not in (1, 3) or mine_blocked
         targets = [move[1]] + sorted((ln for ln in (1, 2, 3) if ln not in (lane, move[1])
-                                      and (any_lane or abs(ln - goal) <= abs(move[1] - goal))),
+                                      and (abs(ln - goal) <= abs(move[1] - goal) or
+                                           (any_lane and (away_ok or
+                                                          abs(ln - goal) <= abs(lane - goal))))),
                                      key=lambda ln: abs(ln - goal))
         out = []
         for tg in targets:
@@ -1567,6 +1594,23 @@ class ThreeRoadNode(MissionNode):
             w = {TURN: sign * self.w, MID: 0.0}.get(self.phase, -sign * self.w)
             self.publish(self.speed, w)
         elif ph == PATH:
+            pa = self.path
+            goal = self.goal_lane()
+            if self.request is not None and goal in (1, 3) and self.orig_lane is not None \
+                    and goal != pa.get('goal') and self.home == goal \
+                    and abs(self.request[1] - goal) > abs(self.orig_lane - goal) \
+                    and pa['s'][pa['idx']] < self.path_abort_frac * pa['s_end']:
+                # the sign came just after this curve started and it leads away from the sign's
+                # road (2026-11-17 10:54: 'right to 3' started 0.1 s before sign A -> B road):
+                # stop while still near the start lane and decide again from there
+                self.get_logger().info(f'{self.request[0]} to {self.request[1]} aborted at '
+                                       f'{pa["s"][pa["idx"]]:.2f} / {pa["s_end"]:.2f} m: goal '
+                                       f'lane {goal} now')
+                self.publish(0.0, 0.0)
+                self.request, self.path = None, None
+                self.lane = self.orig_lane
+                self.start_pre_stop(now, f'curve aborted, goal lane {goal}')
+                return
             if self.step_path(now) and self.path['ok']:
                 # the whole curve driven on odom: the car is in the target lane. Decide at
                 # once: nothing to do -> lane follow without stopping

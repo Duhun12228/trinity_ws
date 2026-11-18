@@ -56,6 +56,7 @@ def declare_path_params(d):
     d('centre_offset', 0.0)          # m, followed line = corridor middle + this (+ left, - right)
     d('corr_gap_min', 0.35)          # m, lateral gap between rows taken as the corridor
     d('corr_gap_max', 0.95)
+    d('corr_gap_lat', 1.3)           # m, rows this far to the side count for the corridor gap
     d('plan_k_max', 1.8)
     d('plan_n_k', 13)
     d('plan_l1', 0.30)
@@ -108,6 +109,7 @@ class ConePathMixin:
         self.corr_width, self.corr_step, self.corr_len = g('corr_width'), g('corr_step'), g('corr_len')
         self.corr_back, self.corr_ahead, self.corr_lat = g('corr_back'), g('corr_ahead'), g('corr_lat_max')
         self.corr_gap_min, self.corr_gap_max = g('corr_gap_min'), g('corr_gap_max')
+        self.corr_gap_lat = g('corr_gap_lat')
         self.centre_offset = g('centre_offset')
         self.plan_k_max, self.plan_n_k = g('plan_k_max'), int(p('plan_n_k'))
         self.plan_l1, self.plan_l2, self.plan_gap_min = g('plan_l1'), g('plan_l2'), g('plan_gap_min')
@@ -146,6 +148,7 @@ class ConePathMixin:
     def reset_path(self):
         self.cmap = []                   # [[x, y, hits]] cone centres in odom
         self.cpath = None                # dict: pts (odom), v, gap, k1
+        self.dbg_cand = None             # (clear mask, chosen index) of the last plan
         self.centre = np.zeros((0, 2))   # car frame, debug
         self.last_k1 = 0.0
         self.guard_since = None
@@ -185,7 +188,7 @@ class ConePathMixin:
         """Clusters up to map_range into the odom cone map."""
         if not self.odom_fresh(now):
             return
-        roi = ok & (x > 0.0) & (x < self.map_range) & (np.abs(y) < 1.0)
+        roi = ok & (x > 0.0) & (x < self.map_range) & (np.abs(y) < 1.4)
         idx, cur, groups = np.flatnonzero(roi), [], []
         prev = None
         for i in idx:
@@ -239,7 +242,7 @@ class ConePathMixin:
         dx, dy = arr[:, 0] - X, arr[:, 1] - Y
         cx = math.cos(H) * dx + math.sin(H) * dy
         cy = -math.sin(H) * dx + math.cos(H) * dy
-        sel = (cx > -0.8) & (cx < self.map_range + 0.3) & (np.abs(cy) < 1.2)
+        sel = (cx > -0.8) & (cx < self.map_range + 0.3) & (np.abs(cy) < 1.5)
         return np.stack([cx[sel], cy[sel]], 1)
 
     # ------------------------------------------------------------ centre line
@@ -257,8 +260,11 @@ class ConePathMixin:
             rel = C - p
             u, v = rel @ d, rel @ n
             win = (u > -self.corr_back) & (u < self.corr_ahead) & (np.abs(v) < self.corr_lat)
+            wide = (u > -self.corr_back) & (u < self.corr_ahead) & (np.abs(v) < self.corr_gap_lat)
             L, R = v[win & (v > 0)], v[win & (v < 0)]
-            vs = np.sort(v[win])
+            # rows searched wider than corr_lat_max: entering beside the corridor (the far row
+            # ~1 m to the side, 2026-11-17 10:54) the gap between both rows is still found
+            vs = np.sort(v[wide])
             gaps = [(vs[k] + vs[k + 1]) / 2.0 for k in range(len(vs) - 1)
                     if self.corr_gap_min <= vs[k + 1] - vs[k] <= self.corr_gap_max]
             if gaps:
@@ -357,6 +363,7 @@ class ConePathMixin:
             self.w_gap * np.maximum(0.0, self.gap_want - gap)    # rather away from the cones
         ok = gap >= self.plan_gap_min
         i = int(np.argmin(np.where(ok, cost, np.inf))) if ok.any() else int(np.argmax(gap))
+        self.dbg_cand = (ok, i)          # debug image: candidates (car frame at this plan)
         self.last_k1 = float(self.cand_k1[i])
         kmax = max(abs(self.cand_k1[i]), abs(self.cand_k2[i]))
         g = float(gap[i])
@@ -591,3 +598,80 @@ class ConePathMixin:
             if self.body_gap(C, k * f) >= self.plan_gap_min:
                 return w * f
         return 0.0
+
+
+# ------------------------------------------------------------------ debug image
+IMG_SCALE = 200                  # px per m
+IMG_X = (-0.6, 1.8)              # m, car frame (x forward = up)
+IMG_Y = 1.0                      # m, each side
+
+
+def path_image(node, now, header_text=''):
+    """Top view in the car frame (x up, y left): lidar points (grey), this scan's clusters
+    (yellow), map cones (orange, cone_body_r circle), candidate paths (green clear / red not),
+    corridor centre (white), chosen path (cyan), car body (yellow box), guard box (red)."""
+    import cv2
+    S = IMG_SCALE
+    W, H = int(2 * IMG_Y * S), int((IMG_X[1] - IMG_X[0]) * S)
+    img = np.zeros((H + 60, W, 3), np.uint8)
+
+    def px(x, y):
+        return int(round(W / 2 - y * S)), int(round((IMG_X[1] - x) * S))
+
+    def pts_px(P):
+        P = np.asarray(P, float).reshape(-1, 2)
+        return np.stack([np.round(W / 2 - P[:, 1] * S), np.round((IMG_X[1] - P[:, 0]) * S)],
+                        1).astype(np.int32)
+
+    for g in np.arange(-0.5, IMG_X[1] + 1e-6, 0.5):          # grid 0.5 m
+        cv2.line(img, px(g, IMG_Y), px(g, -IMG_Y), (45, 45, 45), 1)
+        cv2.putText(img, f'{g:.1f}', (2, px(g, 0)[1] - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.35,
+                    (90, 90, 90), 1, cv2.LINE_AA)
+    for g in np.arange(-1.0, 1.0 + 1e-6, 0.5):
+        cv2.line(img, px(IMG_X[0], g), px(IMG_X[1], g), (45, 45, 45), 1)
+
+    P = getattr(node, 'points', np.zeros((0, 2)))
+    for u, v in pts_px(P):                                       # lidar points
+        if 0 <= u < W and 0 <= v < H:
+            img[v, u] = (160, 160, 160)
+
+    path_mode = getattr(node, 'drive_mode', '') == 'path'
+    odom_ok = path_mode and node.odom_fresh(now)
+    if odom_ok and node.dbg_cand is not None and node.cpath is not None \
+            and now - node.cpath['at'] < 0.5:
+        ok, ci = node.dbg_cand
+        for j in range(0, len(ok), 2):                           # candidates (every 2nd)
+            line = np.stack([node.cand_x[j], node.cand_y[j]], 1)
+            cv2.polylines(img, [pts_px(line)], False, (0, 90, 0) if ok[j] else (0, 0, 90), 1)
+    if odom_ok:
+        C = node.cones_car(now)
+        r = max(1, int(node.cone_body_r * S))
+        for q in pts_px(C):                                      # map cones
+            cv2.circle(img, tuple(q), r, (0, 140, 255), 1)
+            cv2.circle(img, tuple(q), 3, (0, 140, 255), -1)
+        if len(node.centre) >= 2:                                # corridor centre
+            cv2.polylines(img, [pts_px(node.centre)], False, (255, 255, 255), 1)
+        if node.cpath is not None:                               # chosen path (odom -> car)
+            X, Y, Hh = node.odom
+            d = node.cpath['pts'] - np.array([X, Y])
+            c, s = math.cos(Hh), math.sin(Hh)
+            car = np.stack([c * d[:, 0] + s * d[:, 1], -s * d[:, 0] + c * d[:, 1]], 1)
+            cv2.polylines(img, [pts_px(car)], False, (255, 255, 0), 2)
+    for cx, cy in getattr(node, 'clusters', []):                 # this scan's clusters
+        cv2.circle(img, px(cx, cy), 4, (0, 255, 255), 1)
+
+    fx, rear = node.front_x, getattr(node, 'car_rear', 0.16)
+    half = getattr(node, 'car_half', 0.11)
+    cv2.rectangle(img, px(fx, half), px(-rear, -half), (0, 255, 255), 1)          # car
+    gx = fx + getattr(node, 'guard_x', 0.05)
+    cv2.rectangle(img, px(gx, half + 0.03), px(fx, -half - 0.03), (0, 0, 255), 1)  # guard
+
+    pa = node.cpath if path_mode else None
+    t2 = (f'v {pa["v"]:.2f}  k {pa["k1"]:+.1f}/{pa["k2"]:+.1f}  gap {pa["gap"] * 100:.0f} cm'
+          f'{"" if pa["clear"] else " NONE CLEAR"}  cones {len(node.cmap)}') if pa else \
+        ('no odom' if path_mode and not odom_ok else '')
+    cv2.putText(img, header_text[:60], (6, H + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                (0, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(img, t2[:60], (6, H + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                (220, 220, 220), 1, cv2.LINE_AA)
+    return img

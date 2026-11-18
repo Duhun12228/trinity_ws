@@ -54,6 +54,7 @@ Debug: /cone/debug_markers (MarkerArray in base_link) for RViz: cones (orange), 
 pairs (yellow) and their midpoints (white), left row (green), right row (blue), path (cyan),
 lookahead target (magenta), danger box (red), ROI (grey).
 """
+from array import array
 from collections import deque
 import math
 import signal
@@ -63,13 +64,13 @@ from nav_msgs.msg import Odometry
 import numpy as np
 import rclpy
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Float32MultiArray, String
 from trinity_msgs.msg import MissionState
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import Marker, MarkerArray
 
-from trinity_missions.cone_path import ConePathMixin, declare_path_params
+from trinity_missions.cone_path import ConePathMixin, declare_path_params, path_image
 from trinity_missions.mission_base import MissionNode
 
 TRACK, LOST, BACKOFF = 'track', 'lost', 'backoff'
@@ -87,6 +88,7 @@ class ConeNode(ConePathMixin, MissionNode):
         d('lane_state_topic', '/lane_follow/state')
         d('cmd_topic', '/cone_cmd_vel')
         d('debug_topic', '/cone/debug_markers')
+        d('debug_image_topic', '/cone/debug_image')   # top view: cone map + paths (rqt_image_view)
         d('frame_id', 'base_link')
         # sensor poses in base_link
         d('laser_x', 0.103)
@@ -227,6 +229,7 @@ class ConeNode(ConePathMixin, MissionNode):
             self.get_logger().info('drive_mode path: cone map + planned path (cone_path.py)')
         self.pub_cmd = self.create_publisher(Twist, p('cmd_topic'), 10)
         self.pub_debug = self.create_publisher(MarkerArray, p('debug_topic'), 1)
+        self.pub_image = self.create_publisher(Image, p('debug_image_topic'), 1)
         self.get_logger().info(
             f'ready: {self.trigger_class} x{self.trigger_frames} + lidar < {self.enter_dist:.1f} m'
             f' -> [cone] lidar corridor (ROI x < {self.roi_x_max:.1f} m, |y| < '
@@ -268,6 +271,21 @@ class ConeNode(ConePathMixin, MissionNode):
                 self.path_debug(now)
             else:
                 self.step(now)
+        if self.pub_image.get_subscription_count() > 0:
+            self.publish_image(now)
+
+    def publish_image(self, now):
+        names = {0: 'IDLE', 1: 'ARMED', 2: 'REQUEST', 3: 'RUNNING', 4: 'DONE'}
+        head = names.get(self.state, '?') + (f'/{self.phase}' if self.phase else '') + \
+            f'  [{self.drive_mode}]'
+        img = path_image(self, now, head)
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.frame_id
+        msg.height, msg.width = img.shape[:2]
+        msg.encoding, msg.step = 'bgr8', img.shape[1] * 3
+        msg.data = array('B', img.tobytes())
+        self.pub_image.publish(msg)
 
     def detections_callback(self, msg):
         now = self.now()

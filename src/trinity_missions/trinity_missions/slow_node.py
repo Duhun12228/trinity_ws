@@ -4,15 +4,11 @@ Slow mission node.
 Trigger (always on)
   IDLE    -> ARMED    sign_slow (score >= trigger_conf) seen in trigger_frames consecutive
                       frames (not during the cooldown)
-  ARMED   -> IDLE     no sign_slow seen for arm_timeout (each new sign sighting re-arms;
-                      the road text does not)
-  ARMED   -> REQUEST  either start point, whichever comes first:
-                      - stop line down to the reference row: its lowest pixel row is at or
-                        below stop_line_row_ratio * image height, with at least
-                        stop_line_min_pixels pixels, for stop_line_frames consecutive frames
-                      - road "slow" text (road_slow_text) bbox bottom edge at or below
-                        road_text_row_ratio * image_height for road_text_frames frames
-                        (backup when the stop line is missed)
+  ARMED   -> IDLE     no sign_slow seen for arm_timeout (each new sign sighting re-arms)
+  ARMED   -> REQUEST  stop line down to the reference row: its lowest pixel row is at or
+                      below stop_line_row_ratio * image height, with at least
+                      stop_line_min_pixels pixels, for stop_line_frames consecutive frames
+                      (2026-11-18: the road "slow" text request was removed)
   REQUEST -> IDLE     not granted within request_timeout (stale request)
 Control (only in [slow])
   /stanley_cmd_vel -> /slow_cmd_vel with v' = min(v, slow_speed) and w' = w * v'/v, i.e. the
@@ -48,10 +44,6 @@ class SlowNode(MissionNode):
         self.declare_parameter('stop_line_row_ratio', 0.80)
         self.declare_parameter('stop_line_min_pixels', 200)
         self.declare_parameter('stop_line_frames', 2)
-        self.declare_parameter('road_text_class', 'road_slow_text')
-        self.declare_parameter('road_text_conf', 0.5)
-        self.declare_parameter('road_text_row_ratio', 0.80)
-        self.declare_parameter('road_text_frames', 2)
         self.declare_parameter('image_height', 480)  # px, detection boxes are in input pixels
         self.declare_parameter('request_timeout', 2.0)
         self.declare_parameter('slow_speed', 0.2)
@@ -65,10 +57,6 @@ class SlowNode(MissionNode):
         self.stop_row_ratio = float(p('stop_line_row_ratio').value)
         self.stop_min_px = int(p('stop_line_min_pixels').value)
         self.stop_frames = int(p('stop_line_frames').value)
-        self.text_class = p('road_text_class').value
-        self.text_conf = float(p('road_text_conf').value)
-        self.text_row_ratio = float(p('road_text_row_ratio').value)
-        self.text_frames = int(p('road_text_frames').value)
         self.image_height = int(p('image_height').value)
         self.request_timeout = float(p('request_timeout').value)
         self.slow_speed = float(p('slow_speed').value)
@@ -77,7 +65,6 @@ class SlowNode(MissionNode):
         self.trig_count = 0          # consecutive frames with a trigger
         self.trig_class = ''
         self.stop_count = 0          # consecutive frames with the stop line at the reference
-        self.text_count = 0          # consecutive frames with the road text at the reference
         self.armed_at = None         # s, last trigger sighting while ARMED
         self.request_at = None       # s
 
@@ -89,8 +76,7 @@ class SlowNode(MissionNode):
         self.pub_cmd = self.create_publisher(Twist, p('cmd_topic').value, 10)
         self.get_logger().info(
             f'ready: {sorted(self.trigger_classes)} x{self.trigger_frames} -> ARMED '
-            f'({self.arm_timeout:.0f} s) -> stop line at {self.stop_row_ratio:.2f} H or '
-            f'{self.text_class} at {self.text_row_ratio:.2f} H -> REQUEST | '
+            f'({self.arm_timeout:.0f} s) -> stop line at {self.stop_row_ratio:.2f} H -> REQUEST | '
             f'slow {self.slow_speed:.2f} m/s for {self.slow_duration:.1f} s, '
             f'cooldown {self.cooldown:.0f} s')
 
@@ -98,11 +84,7 @@ class SlowNode(MissionNode):
     def detections_callback(self, msg):
         if self.state not in (MissionState.IDLE, MissionState.ARMED):
             self.trig_count = 0
-            self.text_count = 0
             return
-        self.check_road_text(msg)
-        if self.state == MissionState.REQUEST:
-            return  # the road text just started the mission
         best = None
         for det in msg.detections:
             for hyp in det.results:
@@ -124,25 +106,6 @@ class SlowNode(MissionNode):
             self.set_state(MissionState.ARMED, f'{self.trig_class} x{self.trig_count}')
         self.armed_at = now  # (re)arm on every sign sighting
 
-    def check_road_text(self, msg):
-        """ARMED -> REQUEST when the road text box has come down to the reference row."""
-        if self.state != MissionState.ARMED:
-            self.text_count = 0
-            return
-        bottom = None
-        for det in msg.detections:
-            for hyp in det.results:
-                h = hyp.hypothesis
-                if h.class_id == self.text_class and h.score >= self.text_conf:
-                    b = det.bbox.center.position.y + det.bbox.size_y / 2.0
-                    bottom = b if bottom is None else max(bottom, b)
-        reached = bottom is not None and bottom >= self.text_row_ratio * (self.image_height - 1)
-        self.text_count = self.text_count + 1 if reached else 0
-        if self.text_count >= self.text_frames:
-            self.request_at = self.now()
-            self.set_state(MissionState.REQUEST,
-                           f'{self.text_class} bottom at row {bottom:.0f}/{self.image_height}')
-
     def stop_line_callback(self, msg):
         if self.state != MissionState.ARMED:
             self.stop_count = 0
@@ -161,7 +124,7 @@ class SlowNode(MissionNode):
     def tick(self, now):
         if self.state == MissionState.ARMED and now - self.armed_at > self.arm_timeout:
             self.set_state(MissionState.IDLE,
-                           f'no stop line / road text within {self.arm_timeout:.0f} s')
+                           f'no stop line within {self.arm_timeout:.0f} s')
         elif self.state == MissionState.REQUEST and now - self.request_at > self.request_timeout:
             self.set_state(MissionState.IDLE, f'not granted within {self.request_timeout:.0f} s')
         elif (self.state == MissionState.RUNNING and self.active
@@ -172,7 +135,6 @@ class SlowNode(MissionNode):
     def on_start(self, now):
         self.trig_count = 0
         self.stop_count = 0
-        self.text_count = 0
 
     def stanley_callback(self, msg):
         if self.active:

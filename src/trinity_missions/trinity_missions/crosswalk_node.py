@@ -6,6 +6,13 @@ Trigger (always on)
                       frames, not during the cooldown. The master gives [crosswalk] right
                       away and interrupts [slow] (preempt rule crosswalk>slow); slow_node
                       drops its own pending state while [crosswalk] lasts (suppress_modes).
+  IDLE    -> ARMED    (2026-11-18, crosswalks without the sign) light_arm_class (red) in
+                      light_arm_frames consecutive frames. Silent: the master keeps driving
+                      (normal / slow, own speed); only the dashboard shows it.
+  ARMED   -> REQUEST  a crosswalk box (crosswalk_conf) in cw_arm_frames consecutive frames
+                      (the sign also requests right away, as from IDLE)
+  ARMED   -> IDLE     no light_arm_keep colour (red / yellow) for arm_timeout, or green in
+                      disarm_green_frames consecutive frames (pass on green)
   REQUEST -> IDLE     not granted within request_timeout
 Phases in [crosswalk]
   approach    lane follow capped at approach_speed.
@@ -13,15 +20,17 @@ Phases in [crosswalk]
                        in stop_frames consecutive frames. When the box flickers out, the
                        last box seen in the last box_hold_sec is used.
   closing     keep approaching for stop_delay_sec more, then -> stop
-              -> DONE  approach_timeout without a crosswalk box (counted from the last box
-                       seen, or from entering the mode if none yet): the timeout is
-                       extended as long as the crosswalk stays in view
-  stop        zero speed for stop_duration while the traffic light results are recorded
-              (one per frame: best of red / yellow / green above light_conf, or none).
-              Decision on the records of this stop only:
-                fewer than light_min_frames light frames -> DONE (no traffic light, go)
-                green > red + yellow                     -> DONE (go)
-                otherwise                                -> wait_green
+              -> DONE  approach_timeout without a crosswalk box AND without the sign
+                       (counted from the last crosswalk box or sign_pedestrian seen, or
+                       from entering the mode): the timeout is extended as long as the
+                       crosswalk or the sign stays in view (2026-11-18: the sign is seen
+                       early, far before the crosswalk)
+  stop        zero speed, the traffic light watched every frame (best of red / yellow /
+              green above light_conf):
+                green in green_frames consecutive frames, after min_stop_sec -> DONE (go)
+                stop_duration over and no red / yellow seen in this stop     -> DONE (go:
+                                                         no traffic light, or green only)
+                stop_duration over after red / yellow                        -> wait_green
   wait_green  zero speed until green in green_frames consecutive frames -> DONE (go)
 DONE: the master switches back to normal right away (lane follow at its normal speed);
 the base cooldown then blocks re-entry while the same crosswalk is still in view.
@@ -67,6 +76,14 @@ class CrosswalkNode(MissionNode):
         self.declare_parameter('light_conf', 0.4)
         self.declare_parameter('light_min_frames', 5)
         self.declare_parameter('green_frames', 3)
+        self.declare_parameter('min_stop_sec', 1.0)
+        self.declare_parameter('light_arm_class', 'traffic_light_red')
+        self.declare_parameter('light_arm_keep', ['traffic_light_red', 'traffic_light_yellow'])
+        self.declare_parameter('light_arm_conf', 0.4)
+        self.declare_parameter('light_arm_frames', 3)
+        self.declare_parameter('arm_timeout', 5.0)
+        self.declare_parameter('cw_arm_frames', 2)
+        self.declare_parameter('disarm_green_frames', 3)
 
         p = self.get_parameter
         self.trigger_class = p('trigger_class').value
@@ -89,6 +106,18 @@ class CrosswalkNode(MissionNode):
         self.light_min_frames = int(p('light_min_frames').value)
         self.green_frames = int(p('green_frames').value)
         self.light_classes = self.red_classes | {self.green_class}
+        self.min_stop = float(p('min_stop_sec').value)
+        self.arm_class = p('light_arm_class').value
+        self.arm_keep = set(p('light_arm_keep').value)
+        self.arm_conf = float(p('light_arm_conf').value)
+        self.arm_frames = int(p('light_arm_frames').value)
+        self.arm_timeout = float(p('arm_timeout').value)
+        self.cw_arm_frames = int(p('cw_arm_frames').value)
+        self.disarm_green = int(p('disarm_green_frames').value)
+        self.arm_count = 0           # IDLE: red frames in a row
+        self.armed_light_at = None   # s, last red / yellow while ARMED
+        self.cw_arm_count = 0        # ARMED: crosswalk box frames in a row
+        self.disarm_count = 0        # ARMED: green frames in a row
 
         self.trig_count = 0
         self.request_at = None
@@ -101,7 +130,7 @@ class CrosswalkNode(MissionNode):
         self.get_logger().info(
             f'ready: {self.trigger_class} x{self.trigger_frames} -> [crosswalk] approach '
             f'{self.approach_speed:.2f} m/s (gives up {self.approach_timeout:.0f} s after '
-            f'the last {self.cw_class} box) -> stop when '
+            f'the last {self.cw_class} box or {self.trigger_class}) -> stop when '
             f'{self.cw_class} bottom >= row {self.stop_row:.0f} x{self.stop_frames} '
             f'+ {self.stop_delay:.1f} s -> '
             f'{self.stop_duration:.0f} s + traffic light')
@@ -110,9 +139,11 @@ class CrosswalkNode(MissionNode):
         self.cw_count = 0            # consecutive frames with the crosswalk at the stop row
         self.cw_bottom = None        # px, last crosswalk box bottom seen
         self.cw_seen_at = None       # s
+        self.sign_seen_at = None     # s, last sign_pedestrian in [crosswalk] approach
         self.closing_since = None    # s, reference row reached
         self.stop_since = None       # s
         self.lights = Counter()      # this stop: red / yellow / green / none frames
+        self.saw_red = False         # this stop: red / yellow seen
         self.green_count = 0
 
     # --------------------------------------------------------------- trigger
@@ -121,8 +152,17 @@ class CrosswalkNode(MissionNode):
         best = self.best_scores(msg)
         if self.state == MissionState.IDLE:
             self.check_trigger(best, now)
+            if self.state == MissionState.IDLE:
+                self.check_light_arm(best, now)
+        elif self.state == MissionState.ARMED:
+            self.check_trigger(best, now)          # the sign: request right away
+            if self.state == MissionState.ARMED:
+                self.check_armed(msg, best, now)
         elif self.state == MissionState.RUNNING:
             if self.phase == APPROACH:
+                if best.get(self.trigger_class, 0.0) >= self.trigger_conf or \
+                        any(best.get(c, 0.0) >= self.arm_conf for c in self.arm_keep):
+                    self.sign_seen_at = now      # still the sign / red light: keep approaching
                 self.check_stop(msg, now)
             elif self.phase in (STOP, WAIT_GREEN):
                 self.record_light(best)
@@ -144,6 +184,34 @@ class CrosswalkNode(MissionNode):
             self.trig_count = 0
             self.request_at = now
             self.set_state(MissionState.REQUEST, f'{self.trigger_class} x{self.trigger_frames}')
+
+    def check_light_arm(self, best, now):
+        """IDLE: red light -> ARMED (silent, the master keeps driving)."""
+        if best.get(self.arm_class, 0.0) < self.arm_conf or self.in_cooldown(now):
+            self.arm_count = 0
+            return
+        self.arm_count += 1
+        if self.arm_count >= self.arm_frames:
+            self.arm_count = self.cw_arm_count = self.disarm_count = 0
+            self.armed_light_at = now
+            self.set_state(MissionState.ARMED, f'{self.arm_class} x{self.arm_frames}, '
+                                               f'waiting for the {self.cw_class}')
+
+    def check_armed(self, msg, best, now):
+        """ARMED: crosswalk box -> REQUEST; red / yellow keeps it; green -> IDLE."""
+        if any(best.get(c, 0.0) >= self.arm_conf for c in self.arm_keep):
+            self.armed_light_at = now
+        self.disarm_count = self.disarm_count + 1 \
+            if best.get(self.green_class, 0.0) >= self.arm_conf else 0
+        if self.disarm_count >= self.disarm_green:
+            self.set_state(MissionState.IDLE, f'green x{self.disarm_count} while armed: pass')
+            return
+        self.cw_arm_count = self.cw_arm_count + 1 \
+            if best.get(self.cw_class, 0.0) >= self.cw_conf else 0
+        if self.cw_arm_count >= self.cw_arm_frames:
+            self.request_at = now
+            self.set_state(MissionState.REQUEST, f'red light + {self.cw_class} '
+                                                 f'x{self.cw_arm_count}')
 
     # ---------------------------------------------------------------- phases
     def check_stop(self, msg, now):
@@ -170,30 +238,34 @@ class CrosswalkNode(MissionNode):
         seen = max(lights, key=lights.get) if lights else 'none'
         if self.phase == STOP:
             self.lights[seen] += 1
-        elif self.phase == WAIT_GREEN:
-            self.green_count = self.green_count + 1 if seen == self.green_class else 0
-            if self.green_count >= self.green_frames:
-                self.finish(f'green x{self.green_count}, go')
+            if seen in self.red_classes:
+                self.saw_red = True
+        self.green_count = self.green_count + 1 if seen == self.green_class else 0
+        if self.green_count >= self.green_frames and \
+                (self.phase == WAIT_GREEN or self.now() - self.stop_since >= self.min_stop):
+            self.finish(f'green x{self.green_count}, go')
 
     def decide(self):
         green = self.lights[self.green_class]
         red = sum(self.lights[c] for c in self.red_classes)
         summary = f'green {green}, red/yellow {red}, none {self.lights["none"]}'
-        if green + red < self.light_min_frames:
-            self.finish(f'no traffic light ({summary}), go')
-        elif green > red:
-            self.finish(f'green ({summary}), go')
+        if not self.saw_red:
+            self.finish(f'no red in {self.stop_duration:.0f} s ({summary}), go')
         else:
-            self.set_phase(WAIT_GREEN, f'red ({summary})')
+            self.set_phase(WAIT_GREEN, f'red ({summary}): wait for green')
 
     def tick(self, now):
         if self.state == MissionState.REQUEST and now - self.request_at > self.request_timeout:
             self.set_state(MissionState.IDLE, f'not granted within {self.request_timeout:.0f} s')
+        elif self.state == MissionState.ARMED and now - self.armed_light_at > self.arm_timeout:
+            self.set_state(MissionState.IDLE, f'no red light for {self.arm_timeout:.0f} s')
         if self.state != MissionState.RUNNING or not self.active:
             return
-        last_seen = self.cw_seen_at if self.cw_seen_at is not None else self.active_since
+        last_seen = max(t for t in (self.cw_seen_at, self.sign_seen_at, self.active_since)
+                        if t is not None)
         if self.phase == APPROACH and now - last_seen > self.approach_timeout:
-            self.finish(f'no {self.cw_class} box for {self.approach_timeout:.0f} s')
+            self.finish(f'no {self.cw_class} box / {self.trigger_class} for '
+                        f'{self.approach_timeout:.0f} s')
         elif self.phase == CLOSING and now - self.closing_since >= self.stop_delay:
             self.stop_since = now
             self.set_phase(STOP, f'{self.stop_delay:.1f} s after the reference row')

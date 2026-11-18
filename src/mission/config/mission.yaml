@@ -62,11 +62,11 @@ lane_follow_node:
     # Stanley control -> /stanley_cmd_vel (master_node owns /cmd_vel)
     cmd_vel_topic: /stanley_cmd_vel   # master_node relays this to /cmd_vel
     lane_state_topic: /lane_follow/state   # String: both / single_left / single_right / lost / stop
-    base_speed: 0.8          # m/s
+    base_speed: 0.7          # m/s
     steer_k: 1.0                  # 1/m, cross-track gain
     yaw_k: 1.5
     max_steer: 0.6                # rad: w = 1.5 at 0.2 m/s, full steering (limit lifted)
-    steer_smoothing_alpha: 1.0
+    steer_smoothing_alpha: 0.6
     steer_slowdown_ratio: 0.35
     min_smooth_speed: 0.25          # m/s, slowdown floor (never above the target speed)
     min_stanley_speed: 0.1          # m/s, floor of v in atan2(k*e, v)

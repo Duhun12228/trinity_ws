@@ -11,18 +11,13 @@ slow_node:
     trigger_classes: [sign_slow, zigzag]
     trigger_conf: 0.5
     trigger_frames: 3
-    arm_timeout: 5.0                       # s since the last sign / zigzag sighting (road text does not extend it)
+    arm_timeout: 5.0                       # s since the last sign / zigzag sighting
 
-    # 2. REQUEST (only while ARMED): whichever reaches the reference row first
-    #    a) stop line (close enough, not just visible)
+    # 2. REQUEST (only while ARMED): the stop line (close enough, not just visible)
+    #    (2026-11-18: the road "slow" text request was removed)
     stop_line_row_ratio: 0.80              # lowest stop line row >= this * image height
     stop_line_min_pixels: 200
     stop_line_frames: 2
-    #    b) road "slow" text box, backup when the stop line is missed
-    road_text_class: road_slow_text
-    road_text_conf: 0.5
-    road_text_row_ratio: 0.80              # box bottom edge >= this * image_height
-    road_text_frames: 2
     image_height: 480                      # px, detection boxes are in yolopx input pixels
     request_timeout: 2.0                   # s, drop a request the master did not grant
 

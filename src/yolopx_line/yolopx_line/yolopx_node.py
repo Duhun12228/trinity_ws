@@ -10,6 +10,8 @@ Pub : drivable_mask_topic     Image mono8 0/255  my lane (drivable class 1) minu
                               class_id = class name, bbox in input image pixels (multiclass engine)
       overlay_topic           CompressedImage  my lane green, left sky, right purple, lane red,
                               stop line pink, boxes
+      overlay_raw_topic       Image (bgr8)  the same overlay uncompressed (rqt_image_view crashes
+                              on refresh with only the /compressed topic); '' = off
 Image topics and the overlay are only built when someone subscribes.
 
 Engines: the multiclass engine (tools/export_onnx.py) gives all of the above; a v1 engine
@@ -29,8 +31,9 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
+from trinity_msgs.msg import MasterMode
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
 
 from yolopx_line.trt_infer import YolopxTrt
@@ -55,6 +58,7 @@ class YolopxNode(Node):
         self.declare_parameter('engine_path', 'models/yolopx_mc_480x640_fp16.engine')
         self.declare_parameter('input_topic', '/camera/color/image_raw/compressed')
         self.declare_parameter('overlay_topic', '/yolopx/overlay/compressed')
+        self.declare_parameter('overlay_raw_topic', '/yolopx/overlay')  # bgr8 Image (rqt-safe); '' = off
         self.declare_parameter('drivable_mask_topic', '/yolopx/drivable_mask')
         self.declare_parameter('lane_mask_topic', '/yolopx/lane_mask')
         self.declare_parameter('stop_line_mask_topic', '/yolopx/stop_line_mask')
@@ -65,6 +69,7 @@ class YolopxNode(Node):
         self.declare_parameter('det_iou_thres', 0.45)
         self.declare_parameter('pipelined', True)
         self.declare_parameter('overlay_alpha', 0.5)
+        self.declare_parameter('mode_topic', '/master/mode')   # mission mode shown on the overlay
         self.declare_parameter('jpeg_quality', 80)
         self.declare_parameter('log_period_sec', 5.0)
 
@@ -105,6 +110,8 @@ class YolopxNode(Node):
         qos = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
                          reliability=ReliabilityPolicy.BEST_EFFORT)
         self.pub_overlay = self.create_publisher(CompressedImage, p('overlay_topic').value, 1)
+        raw = str(p('overlay_raw_topic').value)
+        self.pub_overlay_raw = self.create_publisher(Image, raw, 1) if raw else None
         self.pub_da = self.create_publisher(Image, p('drivable_mask_topic').value, 1)
         self.pub_ll = self.create_publisher(Image, p('lane_mask_topic').value, 1)
         self.pub_stop = self.pub_da_cls = self.pub_det = None
@@ -114,6 +121,11 @@ class YolopxNode(Node):
             self.pub_det = self.create_publisher(Detection2DArray, p('detections_topic').value, 1)
         self.sub = self.create_subscription(
             CompressedImage, p('input_topic').value, self.on_image, qos)
+        self.mode = '-'
+        latched = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                             reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(MasterMode, p('mode_topic').value, self.on_mode, latched)
 
         self._reset_stats()
         self.get_logger().info(
@@ -169,8 +181,10 @@ class YolopxNode(Node):
             self.pub_det.publish(self._det_msg(header, dets))
             self.n_det += len(dets)
 
-        if self.pub_overlay.get_subscription_count() > 0:
-            self._publish_overlay(header, bgr, da, ll, dets)
+        want_raw = self.pub_overlay_raw is not None and \
+            self.pub_overlay_raw.get_subscription_count() > 0
+        if self.pub_overlay.get_subscription_count() > 0 or want_raw:
+            self._publish_overlay(header, bgr, da, ll, dets, want_raw)
 
     def _nms(self, det):
         """det [N,6] cx,cy,w,h,score,cls -> [(cls, score, cx, cy, w, h)] after per-class NMS."""
@@ -202,7 +216,10 @@ class YolopxNode(Node):
             arr.detections.append(d)
         return arr
 
-    def _publish_overlay(self, header, bgr, da, ll, dets):
+    def on_mode(self, msg):
+        self.mode = msg.mode or '-'
+
+    def _publish_overlay(self, header, bgr, da, ll, dets, want_raw=False):
         color = bgr.copy()
         for mask, c in ((cv2.compare(da, 1, cv2.CMP_EQ), C_MY_LANE),
                         (cv2.compare(da, 2, cv2.CMP_EQ), C_LEFT),
@@ -217,6 +234,20 @@ class YolopxNode(Node):
             cv2.rectangle(overlay, p1, p2, C_BOX, 2)
             cv2.putText(overlay, f'{self._name(cls)} {score:.2f}', (p1[0], max(p1[1] - 4, 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, C_BOX, 1, cv2.LINE_AA)
+        text = f'mode: {self.mode}'
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+        cv2.rectangle(overlay, (0, 0), (tw + 16, th + 16), (0, 0, 0), -1)
+        cv2.putText(overlay, text, (8, th + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2,
+                    cv2.LINE_AA)
+        if want_raw:
+            img = Image()
+            img.header = header
+            img.height, img.width = overlay.shape[:2]
+            img.encoding, img.step = 'bgr8', overlay.shape[1] * 3
+            img.data = array('B', overlay.tobytes())
+            self.pub_overlay_raw.publish(img)
+        if self.pub_overlay.get_subscription_count() == 0:
+            return
         ok, jpg = cv2.imencode('.jpg', overlay, self.jpeg_params)
         if ok:
             out = CompressedImage()

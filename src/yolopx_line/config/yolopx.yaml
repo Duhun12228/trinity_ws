@@ -3,7 +3,7 @@ yolopx_node:
     # relative path -> resolved under share/yolopx_line/
     # multiclass + detection engine (tools/export_onnx.py). Roll back to v1:
     #   engine_path: models/yolopx_480x640_fp16.engine
-    engine_path: models/yolopx_mc_480x640_fp16.engine
+    engine_path: models/yolopx_mc_v2_480x640_fp16.engine
     input_topic: /camera/color/image_raw/compressed
     overlay_topic: /yolopx/overlay/compressed
     drivable_mask_topic: /yolopx/drivable_mask      # my lane only (0/255)

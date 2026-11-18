@@ -27,7 +27,7 @@ cone_node:
     request_timeout: 1.0                   # s
 
     # 2. corridor from the lidar (base_link: x forward, y left); the lidar sees +-60 deg only
-    roi_x_max: 1.2                         # m ahead
+    roi_x_max: 0.6                         # m ahead (1.2 -> 0.6, 2026-11-18 user)
     roi_y_half: 0.8                        # m each side (0.5 cut off a cone row at y -0.6)
     cluster_gap: 0.08                      # m, neighbouring beams closer than this = same cone
     cluster_min_points: 2

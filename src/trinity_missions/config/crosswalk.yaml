@@ -12,8 +12,8 @@ crosswalk_node:
     trigger_frames: 3
     request_timeout: 1.0                   # s, drop a request the master did not grant
     approach_speed: 0.2                    # m/s while approaching
-    approach_timeout: 5.0                  # s without a crosswalk box -> normal (counted from the
-                                           # last box seen, or from entering if none yet)
+    approach_timeout: 5.0                  # s without a crosswalk box AND the sign -> normal (counted
+                                           # from the last box / sign seen, or from entering)
 
     # 2. stop: crosswalk box BOTTOM EDGE (not size) down to the reference row
     crosswalk_class: crosswalk
@@ -31,7 +31,20 @@ crosswalk_node:
     light_green_class: traffic_light_green
     light_conf: 0.4
     light_min_frames: 5                    # fewer light frames -> no traffic light, go
-    green_frames: 3                        # red: wait until green this many frames in a row
+    green_frames: 3                        # green this many frames in a row -> go
+    min_stop_sec: 1.0                      # s, shortest stop even on green
+    # stop_duration over without red / yellow -> go; after red / yellow -> wait for green
+    # (light_min_frames is no longer used)
+
+    # 3b. (2026-11-18) crosswalks without the sign: red light -> silent ARMED (the master
+    #     keeps driving), then the crosswalk box -> [crosswalk] as above
+    light_arm_class: traffic_light_red
+    light_arm_keep: [traffic_light_red, traffic_light_yellow]   # these keep ARMED alive
+    light_arm_conf: 0.4
+    light_arm_frames: 3                    # red frames in a row -> ARMED
+    arm_timeout: 5.0                       # s without red / yellow -> IDLE
+    cw_arm_frames: 2                       # crosswalk box frames in a row while ARMED -> REQUEST
+    disarm_green_frames: 3                 # green frames in a row while ARMED -> IDLE (pass)
 
     # 4. no re-entry while the same crosswalk is still in view
     cooldown: 3.0                          # s after leaving [crosswalk]

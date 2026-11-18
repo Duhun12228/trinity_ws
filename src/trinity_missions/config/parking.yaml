@@ -8,12 +8,13 @@ parking_node:
     mode_topic: /master/mode
 
     # trigger: parking sign -> ARMED, then the stop line at the reference row -> [parking]
+    require_sign: true                     # sign_parking first, then the stop line (false = stop line alone, testing off the track)
     trigger_class: sign_parking
     trigger_conf: 0.5
     trigger_frames: 3
     trigger_min_area: 800.0                # px^2 (box w*h, 640x480 input): seen from far away is
                                            # ignored; measure the box at the wanted arming spot
-    arm_timeout: 10.0                      # s without the stop line after the last sign -> IDLE
+    arm_timeout: 5.0                       # s without the stop line after the last sign -> IDLE
     stop_line_row_ratio: 0.80              # measure: lowest stop line row when the car is at the
                                            # start point of the manoeuvre
     stop_line_min_pixels: 200
@@ -27,12 +28,39 @@ parking_node:
     # ~1.05 m): a full 90 deg would overshoot into the lower row, ~60 deg ends inside the slot.
     speed: 0.2                             # m/s, all steps
     straight_lane_follow: true             # straight: lane follow (true) or w = 0 (false)
-    straight_sec: 4.3                      # s, from the trigger to the start of the turn
+    straight_sec: 12.0                     # s, time limit only (2026-11-17: the turn point is on odom, was 4.3 s)
     turn_side: right
     steer: 0.983                           # rad, full steering: w = 1.5 at 0.2 m/s (same as 3road)
     wheelbase: 0.2
     turn_sec: 5.3                          # s at full steering
     in_sec: 0.0                            # s straight after the turn (0 = skip)
     hold_sec: 30.0                         # s parked, then back to normal
+
+    # 2026-11-17: turn ends at turn_deg on the odom yaw (turn_sec = time limit), then straight
+    # back back_dist on odom (wheels straight -> only back towards the lane, not the next slot).
+    # 09:37 run: 5.3 s turn = 96 deg, car 15 cm too deep (front bumper on the slot end line).
+    # Old behaviour: turn_deg 0.0, back_dist 0.0
+    odom_topic: /odometry/filtered
+    turn_deg: 87.0                         # deg (stops ~3 deg late: ~90)
+    back_dist: 0.07                        # m straight back after the turn (0.15 -> 0.10 -> 0.07, 2026-11-17 user: a bit less)
+    back_speed: 0.1                        # m/s
+    back_max_sec: 3.0                      # s, backing ends after this anyway
+
+    # 2026-11-17: 3 slots side by side on the right, the first free one is taken (lidar).
+    # Slot k centre = start_to_line + slot_first + (k + 0.5) slot_width from the trigger pose;
+    # the turn starts turn_radius before it (log 'slots at ... m on odom').
+    # Turns too late (car too far along in the slot) -> turn_radius up / start_to_line down.
+    scan_topic: /scan
+    laser_x: 0.103
+    start_to_line: 0.35                    # m, base_link to the stop line at the trigger (IPM: row 0.80 = 0.27 m before the camera)
+    slot_first: 0.46                       # m, stop line to slot 1 (user measurement)
+    slot_width: 0.50                       # m, slot opening along the lane
+    slot_depth: 0.60                       # m
+    slot_open: 0.25                        # m, lane centre to the slot opening (right white line)
+    slot_count: 3
+    slot_margin: 0.05                      # m, slot box shrunk by this on every side
+    slot_min_points: 3                     # lidar points in the box -> occupied scan
+    slot_occ_scans: 3                      # occupied scans -> slot occupied
+    turn_radius: 0.62                      # m, full right steering at 0.2 m/s (measured)
 
     cooldown: 5.0                          # s, no re-trigger after leaving [parking]
