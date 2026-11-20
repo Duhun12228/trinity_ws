@@ -179,6 +179,24 @@ class ThreeRoadNode(MissionNode):
         d('reverse_speed', 0.15)
         d('reverse_max', 1.0)
         d('reverse_min', 0.3)                # m backed off before planning again
+        d('reverse_along_track', False)      # True: back along the driven track, False: straight
+        # stuck at the same spot (2026-11-20: 11 x reverse 0.3 m -> drive -> blocked, 40 s): the
+        # stuck_n_long-th back-off within stuck_radius / stuck_window goes reverse_long m, then
+        # the approach holds the sign's lane centre harder (w_centre_stuck) for stuck_boost_m
+        d('stuck_n_long', 3)                 # 0 = off
+        # the plan flickers at a tight gap (it closes and opens as lidar cells pile up, squeeze <->
+        # wait <-> reverse, 2026-11-20): a failed plan keeps the last path for this long (0 = off)
+        d('path_keep_sec', 1.0)
+        # assumed drawing error from the island on: everything with map x < island_shift_from_x
+        # (island, nose, A / B roads, exit) lies island_map_shift m further +y (the car's right,
+        # the B side) than drawn; the planner, side wall and side correction use it (0 = off)
+        d('island_map_shift', 0.0)
+        d('island_shift_from_x', 4.75)
+        d('stuck_radius', 0.6)               # m
+        d('stuck_window', 40.0)              # s
+        d('reverse_long', 1.0)               # m
+        d('w_centre_stuck', 3.0)             # lane centre weight during that approach
+        d('stuck_boost_m', 1.0)              # m past the block point it applies
         d('min_partial', 1.2)                # m: a path short of the exit must still go this far
         d('partial_speed', 0.25)             # m/s on a partial path (exit not reachable yet)
         d('tight_clear', 0.20)               # m, path ahead closer than this -> slow_speed
@@ -286,6 +304,22 @@ class ThreeRoadNode(MissionNode):
         self.rev_speed = float(g('reverse_speed'))
         self.rev_max = float(g('reverse_max'))
         self.rev_min = float(g('reverse_min'))
+        self.rev_track = bool(g('reverse_along_track'))
+        self.rev_min_now, self.rev_max_now = self.rev_min, self.rev_max
+        self.stuck_n_long = int(g('stuck_n_long'))
+        self.path_keep_sec = float(g('path_keep_sec'))
+        self.isl_shift = float(g('island_map_shift'))
+        self.isl_shift_x = float(g('island_shift_from_x'))
+        self.path_ok_at = -1e9        # s, last plan that found a path
+        self.last_keep_log = 0.0
+        self.stuck_radius = float(g('stuck_radius'))
+        self.stuck_window = float(g('stuck_window'))
+        self.reverse_long = float(g('reverse_long'))
+        self.w_centre_stuck = float(g('w_centre_stuck'))
+        self.stuck_boost_m = float(g('stuck_boost_m'))
+        self.w_centre0 = float(g('w_centre'))
+        self.stuck = None             # last back-off: x, y, t, n (same spot count)
+        self.boost_x = None           # lane centre boost while the car is beyond this x
         self.min_partial = float(g('min_partial'))
         self.partial_speed = float(g('partial_speed'))
         self.tight_clear = float(g('tight_clear'))
@@ -323,6 +357,7 @@ class ThreeRoadNode(MissionNode):
         self.nose_len = float(g('nose_len'))
         self.map = R3.Road3Map(res=float(g('map_res')), hit_min=int(g('hit_min')),
                                nose_len=self.nose_len, nose_half=float(g('nose_half')),
+                               isl_shift=self.isl_shift, isl_shift_x=self.isl_shift_x,
                                car_r=float(g('car_r')), circ_off=float(g('circ_off')),
                                hit_cap=int(g('hit_cap')), clear_margin=float(g('clear_margin')),
                                static_extra=float(g('static_extra')))
@@ -585,7 +620,8 @@ class ThreeRoadNode(MissionNode):
             lanes = (self.map.side,) if self.map.side in (1, 3) else (1, 3)
         else:
             lanes = (1, 3) if pose[0] < R3.ISL_TIP else (1, 2, 3)
-        err = min(((R3.LANE_Y[k] + c) - pose[1] for k in lanes), key=abs)
+        yo = float(self.map.yoff(pose[0]))          # drawing shift beyond the island start
+        err = min(((R3.LANE_Y[k] + yo + c) - pose[1] for k in lanes), key=abs)
         if abs(err) > lmax:
             return
         self.lc_pending += gain * err
@@ -809,6 +845,7 @@ class ThreeRoadNode(MissionNode):
         self.side_seen_at = now          # the side-lane exit counts from the start
         self.map.reset()
         self.path = None
+        self.path_ok_at = -1e9
         self.mode = WAIT
         self.hist = []
         self.rev_dist = 0.0
@@ -913,6 +950,9 @@ class ThreeRoadNode(MissionNode):
 
     def replan(self, now, pose):
         self.map.update()
+        if self.boost_x is not None and pose[0] <= self.boost_x:
+            self.boost_x = None                      # past the block point: normal weight again
+        self.dp.w_centre = self.w_centre_stuck if self.boost_x is not None else self.w_centre0
         p, info = self.dp.plan(self.map, pose)
         p = self.plan_ok(p, info, pose)
         mode = DRIVE
@@ -926,22 +966,25 @@ class ThreeRoadNode(MissionNode):
             info2['ms'] += info['ms']
             info = info2
             mode = SQUEEZE
+        kept = p is None and not spent and self.keep_path(now, pose)
+        if kept:
+            mode = SQUEEZE
         if p is None and spent:
             # still nothing: another back-off from here (rev_can is checked again behind)
             self.rev_dist, self.rev_can = 0.0, True
             if now - getattr(self, 'last_again_log', 0.0) > 2.0:
                 self.last_again_log = now
                 self.get_logger().info('back-off used up and still blocked: backing off again')
-        self.blocked = self.blocked + 1 if p is None else 0
-        if p is None:
+        self.blocked = self.blocked + 1 if p is None and not kept else 0
+        if p is None and not kept:
             # back off only when two plans in a row found nothing (one miss: hold still)
             mode = WAIT if self.blocked < 2 else REVERSE
         if mode != self.mode:
             why = f'x {pose[0]:.2f} y {pose[1]:.2f}'
-            if p is None:
+            if p is None and not kept:
                 why += ', ' + self.blocked_text(pose)
             self.set_phase(mode, why)
-        elif p is None and now - self.last_block_log > 2.0:
+        elif p is None and not kept and now - self.last_block_log > 2.0:
             self.last_block_log = now
             self.get_logger().info(f'still blocked ({mode}, backed {self.rev_dist:.2f} m): '
                                    + self.blocked_text(pose))
@@ -949,11 +992,51 @@ class ThreeRoadNode(MissionNode):
             self.rev_dist = 0.0
         if mode == REVERSE and self.mode != REVERSE:
             self.rev_dist, self.rev_can = 0.0, True
+            self.begin_reverse(now, pose)
         self.mode = mode
-        self.path = R3.densify(p) if p is not None else None
-        self.reach_x = info.get('reach_x') if p is not None and info.get('partial') else None
+        if not kept:
+            self.path = R3.densify(p) if p is not None else None
+            self.reach_x = info.get('reach_x') if p is not None and info.get('partial') else None
+            if p is not None:
+                self.path_ok_at = now
         self.plan_ms = info['ms']
         self.last_plan = now
+
+    def keep_path(self, now, pose):
+        """the plan found nothing but a path was followed a moment ago: a tight gap flickers
+        (cells pile up as the car comes closer), so keep following that path for path_keep_sec.
+        The bumper guard still stops the car. Not near the path's end or off the path."""
+        if self.path_keep_sec <= 0.0 or self.path is None or len(self.path) < 2 \
+                or self.mode not in (DRIVE, SQUEEZE) or now - self.path_ok_at > self.path_keep_sec:
+            return False
+        if self.path[-1][0] > pose[0] - 0.3:
+            return False
+        if float(np.hypot(self.path[:, 0] - pose[0], self.path[:, 1] - pose[1]).min()) > 0.15:
+            return False
+        if now - self.last_keep_log > 2.0:
+            self.last_keep_log = now
+            self.get_logger().info(f'plan flickered at x {pose[0]:.2f} y {pose[1]:.2f}: keeping '
+                                   f'the last path (up to {self.path_keep_sec:.1f} s)')
+        return True
+
+    def begin_reverse(self, now, pose):
+        """a back-off starts: count back-offs at the same spot; the stuck_n_long-th one goes
+        reverse_long m and is followed by an approach that holds the lane centre harder."""
+        st = self.stuck
+        near = st is not None and now - st['t'] <= self.stuck_window and \
+            math.hypot(pose[0] - st['x'], pose[1] - st['y']) <= self.stuck_radius
+        n = st['n'] + 1 if near else 1
+        self.stuck = {'x': pose[0], 'y': pose[1], 't': now, 'n': n}
+        self.rev_min_now, self.rev_max_now = self.rev_min, self.rev_max
+        if self.stuck_n_long > 0 and n >= self.stuck_n_long:
+            self.rev_min_now = self.reverse_long
+            self.rev_max_now = max(self.rev_max, self.reverse_long)
+            self.boost_x = pose[0] - self.stuck_boost_m
+            self.stuck['n'] = 0
+            self.get_logger().info(
+                f'stuck at x {pose[0]:.2f} y {pose[1]:.2f} ({n} back-offs here): backing off '
+                f'{self.rev_min_now:.1f} m, then the lane centre holds harder until x '
+                f'{self.boost_x:.2f}')
 
     def blocked_text(self, pose):
         """what blocks: obstacle cells in the 1.2 m ahead (map x, y ranges); nearest = in the
@@ -1009,7 +1092,7 @@ class ThreeRoadNode(MissionNode):
                                    throttle_duration_sec=1.0)
             self.publish(0.0, 0.0)
             self.v_cmd = 0.0
-        backing = self.mode == REVERSE and self.rev_dist < self.rev_min and self.rev_can
+        backing = self.mode == REVERSE and self.rev_dist < self.rev_min_now and self.rev_can
         if now - self.last_plan >= self.plan_period and not backing:
             # (a started backoff runs rev_min m first: replanning after a few cm drove the car
             #  straight back into the same spot, sim 2026-11-18)
@@ -1042,6 +1125,7 @@ class ThreeRoadNode(MissionNode):
                     self.set_phase(REVERSE, f'guard {self.guard_hold:.1f} s, x {pose[0]:.2f} '
                                             f'y {pose[1]:.2f}')
                     self.mode, self.rev_dist, self.rev_can = REVERSE, 0.0, True
+                    self.begin_reverse(now, pose)
                     self.blocked, self.guard_since = 2, None
             else:
                 self.guard_since = None
@@ -1052,14 +1136,14 @@ class ThreeRoadNode(MissionNode):
             back = np.array([h[:2] for h in self.hist[::-1]])
             nx = pose[0] - 0.05 * math.cos(pose[2])
             ny = pose[1] - 0.05 * math.sin(pose[2])
-            ok = self.rev_dist < self.rev_max and \
+            ok = self.rev_dist < self.rev_max_now and \
                 float(self.map.pose_clear(nx, ny, pose[2], obs_only=True)) >= self.squeeze_r
             # objects only: the lines are where we just drove (a map error near a line held
             # the car for 16 s, backed 0.00 m, 2026-11-19)
             self.rev_can = ok
             if ok:
-                kr = 0.0                         # nothing driven yet: straight back
-                if len(back) > 1:
+                kr = 0.0                         # straight back (or nothing driven yet)
+                if self.rev_track and len(back) > 1:
                     kr, _ = R3.pure_pursuit((pose[0], pose[1], pose[2] + math.pi), back, 0.2)
                 v, k = -self.rev_speed, -kr
                 self.rev_dist += self.rev_speed / self.control_rate()
@@ -1123,6 +1207,9 @@ class ThreeRoadNode(MissionNode):
         cv2.polylines(top, [np.array([f(p) for p in R3.ROAD], np.int32)], True, (0, 200, 255), 2)
         cv2.polylines(top, [np.array([f(p) for p in R3.ISLAND], np.int32)], True,
                       (0, 200, 255), 2)
+        if m.isl_shift != 0.0:                              # the shifted island (assumed)
+            cv2.polylines(top, [np.array([f((p[0], p[1] + m.isl_shift)) for p in R3.ISLAND],
+                                         np.int32)], True, (255, 0, 255), 1)
         cv2.putText(top, 'A', f((3.3, 0.33)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (0, 255, 0) if m.side == 1 else (170, 170, 170), 2)
         cv2.putText(top, 'B', f((3.3, 1.38)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,

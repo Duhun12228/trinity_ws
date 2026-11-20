@@ -36,7 +36,7 @@ three_road_node:
     start_yaw_max_deg: 6.0                 #    with |yaw| <= this only; none -> 180 deg
     # heading correction while running (x hc_x_min..hc_x_max: every line there is parallel to
     # the road): a start heading 1-3 deg off put the car ~0.2 m off the map at the island
-    hc_on: true
+    hc_on: false                           # off (2026-11-20): no lane line corrections before the island (hc runs only at x 5.2-8.0)
     hc_x_min: 5.2                          # 4.9 -> 5.2: the island tip lines in view (2026-11-19)
     hc_x_max: 8.0
     hc_agree_deg: 3.0                      # lane_follow near and ahead yaw agree within this
@@ -50,7 +50,7 @@ three_road_node:
     # (dashed section y 0.42 / 0.94 / 1.46, beside the island A 0.42 / B 1.46); the lane is the
     # one nearest to where the map thinks the car is
     lc_on: true
-    lc_x_ranges: [5.2, 8.2, 2.85, 3.95]    # m, map x pairs where every line is straight (4.4 -> 5.2:
+    lc_x_ranges: [2.85, 3.95]              # 5.2-8.2 removed (2026-11-20): side correction only beside the island    # m, map x pairs where every line is straight (4.4 -> 5.2:
                                            #    near the tip lane_follow took the island lines)
     lc_states: [both]                      # lane_follow states trusted
     lc_yaw_max_deg: 6.0                    # only nearly parallel to the lane
@@ -105,7 +105,7 @@ three_road_node:
     laser_x: 0.103
     laser_y: 0.0
     laser_yaw: 0.0
-    scan_range: 5.0                        # m, rays without a hit end here (seen cells)
+    scan_range: 5.5                        # m, rays without a hit end here (seen cells)
     self_radius: 0.20                      # m, points this close to base_link = the car itself
     map_res: 0.025                         # m (0.05: lidar noise thickens objects, gaps close)
     hit_min: 2                             # hits for an obstacle cell (one per scan)
@@ -121,8 +121,8 @@ three_road_node:
 
     # 4. planner (Frenet DP, the whole rest of the section)
     plan_period: 0.2                       # s
-    k_hard: 4.5                           # 1/m curvature limit (the car does ~4; 4.4 -> stuck in sim)
-    pad: 0.06                              # m wanted clearance on top of car_r (soft, 0.04 -> 0.02)
+    k_hard: 3.5                           # 1/m curvature limit (the car does ~4; 4.4 -> stuck in sim)
+    pad: 0.10                              # m wanted clearance on top of car_r (soft, 0.04 -> 0.02)
     w_clear: 4.0                           # weight of that cost: higher = keeps further from objects
                                            #    (a tight gap is still taken, just costs more)
     w_unseen: 3.0                          # cost for cells the lidar has not seen (behind objects)
@@ -140,7 +140,7 @@ three_road_node:
     # the lateral grid is 5 cm through the start y)
     # no-go wedge in front of the island tip (x 4.26 -> 4.26 + nose_len, y 0.94 +- nose_half at
     # the tip): with a late sign the car went head-on to the tip; the middle pull ends at its apex
-    nose_len: 0.40
+    nose_len: 0.0                          # off (2026-11-20: with island_map_shift 0.30 the shifted nose closed the B way; was 0.40)
     nose_half: 0.05
     island_bias: 0.06
     w_centre_island: 2.0
@@ -149,13 +149,33 @@ three_road_node:
 
     # 5. control (pure pursuit on odom)
     control_rate_hz: 20.0
-    drive_speed: 0.45                      # m/s
-    slow_speed: 0.27                       #    path ahead tighter than tight_clear
-    curve_speed: 0.30                      #    |k| > curve_k
+    drive_speed: 0.35                      # m/s
+    slow_speed: 0.17                       #    path ahead tighter than tight_clear
+    curve_speed: 0.20                      #    |k| > curve_k
     creep_speed: 0.17                      #    squeeze
     reverse_speed: 0.15                    # no path at all: back along the driven track
-    reverse_max: 1.0                       # m per blocked spell
+    reverse_max: 0.3                       # m per blocked spell (1.0 -> 0.3, 2026-11-20: plain 0.3 m back)
     reverse_min: 0.3                       # m backed off before planning again (no ping-pong)
+    reverse_along_track: false             # false: straight back (2026-11-20), true: along the driven track
+    # stuck at the same spot (2026-11-20: 11 x reverse 0.3 m -> drive -> blocked, 40 s at x 5.5): the
+    # stuck_n_long-th back-off within stuck_radius / stuck_window goes reverse_long m, then the
+    # approach holds the sign's lane centre harder (w_centre_stuck) for stuck_boost_m (0 = off)
+    stuck_n_long: 3
+    # the plan flickers at a tight gap (closes and opens as lidar cells pile up): a failed plan keeps
+    # the last path this long (s, 0 = off); the bumper guard still stops the car
+    path_keep_sec: 1.0
+    # assumed drawing error from the island on (2026-11-20 test): everything with map x <
+    # island_shift_from_x (island, nose, A / B roads, exit) lies island_map_shift m further +y (the
+    # car's right, the B side) than drawn. + = the car ran too far left (B: onto the island, A:
+    # onto the outer line); 0 = off. Planner, side wall and side correction use the shifted lines;
+    # the car pose is not moved (09:58 run: moving it near the nose put the car onto the nose)
+    island_map_shift: 0.30
+    island_shift_from_x: 4.75                # m (map x), just in front of the nose apex (4.66)
+    stuck_radius: 0.6                      # m
+    stuck_window: 40.0                     # s
+    reverse_long: 1.0                      # m (reverse_max is raised to it)
+    w_centre_stuck: 3.0                    # lane centre weight (w_centre 0.8) during that approach
+    stuck_boost_m: 1.0                     # m past the block point
     # no path to the exit (e.g. objects near the island seen from one side only): drive the
     # path to the furthest reachable station, plan again on the way
     min_partial: 1.2                       # m, a shorter partial path counts as blocked (0.35:

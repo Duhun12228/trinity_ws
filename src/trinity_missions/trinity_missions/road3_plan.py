@@ -44,7 +44,8 @@ X0, Y0, X1, Y1 = 1.40, 0.05, 9.10, 1.85     # grid window
 class Road3Map:
 
     def __init__(self, res=0.025, hit_min=2, car_r=0.13, circ_off=0.09, hit_cap=6,
-                 clear_margin=0.06, static_extra=0.0, nose_len=0.0, nose_half=0.05):
+                 clear_margin=0.06, static_extra=0.0, nose_len=0.0, nose_half=0.05,
+                 isl_shift=0.0, isl_shift_x=4.75):
         self.res = res
         self.static_extra = static_extra  # m more margin to the yellow lines than to objects
         self.hit_cap = hit_cap            # hits saturate here, so a wrong cell clears quickly
@@ -54,21 +55,37 @@ class Road3Map:
         self.hit_min = hit_min
         self.car_r = car_r
         self.circ_off = circ_off
+        # assumed drawing error from the island on: everything with x < isl_shift_x (island,
+        # nose, A / B roads, exit) lies isl_shift m further +y than drawn (2026-11-20 test)
+        self.isl_shift, self.isl_shift_x = isl_shift, isl_shift_x
+        xs = X0 + (np.arange(self.nx) + 0.5) * res
+        ys = Y0 + (np.arange(self.ny) + 0.5) * res
+        img = self._static(0.0, nose_len, nose_half)
+        if isl_shift != 0.0:
+            cols = xs < isl_shift_x
+            img[:, cols] = self._static(isl_shift, nose_len, nose_half)[:, cols]
+        self.free0 = img.astype(bool)
+        self.cx, self.cy = np.meshgrid(xs, ys)
+        self.reset()
+
+    def _static(self, dy, nose_len, nose_half):
+        """the drawing (road inside the yellow lines, minus island and nose), moved dy in y."""
+        off = np.array([0.0, dy])
         img = np.zeros((self.ny, self.nx), np.uint8)
-        cv2.fillPoly(img, [self._px(ROAD)], 1)
-        cv2.fillPoly(img, [self._px(ISLAND)], 0)
-        cv2.polylines(img, [self._px(ISLAND)], True, 0, 1)
+        cv2.fillPoly(img, [self._px(ROAD + off)], 1)
+        cv2.fillPoly(img, [self._px(ISLAND + off)], 0)
+        cv2.polylines(img, [self._px(ISLAND + off)], True, 0, 1)
         if nose_len > 0:
             # no-go wedge in front of the island tip: the roads part there, nobody drives it;
             # keeps the car off the tip head-on (sign late -> the tip lines were followed)
             nose = np.array([(ISL_TIP - 0.05, MID_Y - nose_half), (ISL_TIP + nose_len, MID_Y),
-                             (ISL_TIP - 0.05, MID_Y + nose_half)])
+                             (ISL_TIP - 0.05, MID_Y + nose_half)]) + off
             cv2.fillPoly(img, [self._px(nose)], 0)
-        self.free0 = img.astype(bool)
-        xs = X0 + (np.arange(self.nx) + 0.5) * res
-        ys = Y0 + (np.arange(self.ny) + 0.5) * res
-        self.cx, self.cy = np.meshgrid(xs, ys)
-        self.reset()
+        return img
+
+    def yoff(self, x):
+        """the drawing's y offset at map x (isl_shift beyond isl_shift_x, else 0)."""
+        return np.where(np.asarray(x) < self.isl_shift_x, self.isl_shift, 0.0)
 
     def _px(self, poly):
         return np.round((poly - (X0, Y0)) / self.res).astype(np.int32)
@@ -164,8 +181,9 @@ class Road3Map:
         smaller footprint let a body corner touch the exit taper, sim 2026-11-18)."""
         static = self.free0.copy()
         if self.side is not None:           # the other side of the island = wall
+            mid = MID_Y + self.yoff(self.cx)
             wrong = (self.cx > 2.5) & (self.cx < ISL_TIP + 0.05) & \
-                ((self.cy < MID_Y) if self.side == 3 else (self.cy > MID_Y))
+                ((self.cy < mid) if self.side == 3 else (self.cy > mid))
             static &= ~wrong
         occ = self.occupied()
         self.free = static & ~occ
@@ -222,7 +240,10 @@ class FrenetDP:
         # pose ended 0.2 m outside and nothing was ever planned): start from the nearest lateral
         # grid point inside and check only objects (not the lines) for the first escape_n
         # stations, so the path leads back into the road
-        y0c = float(np.clip(y0, self.d_min, self.d_max))
+        # lateral range, wider by the drawing shift, inside the map window
+        dmin = max(self.d_min + min(0.0, m.isl_shift), Y0 + 0.1)
+        dmax = min(self.d_max + max(0.0, m.isl_shift), Y1 - 0.1)
+        y0c = float(np.clip(y0, dmin, dmax))
         escape = y0c != y0
         if not escape:
             c_all = float(m.pose_clear(x0, y0, th0))
@@ -233,8 +254,8 @@ class FrenetDP:
         slope0 = float(np.clip(slope0, -2.0, 2.0))
         if escape:
             slope0 = 0.0       # pointing out of the road: the path may turn in right away
-        lo = y0 - math.floor((y0 - self.d_min) / DD) * DD   # lateral grid through y0
-        d = np.arange(lo, self.d_max + 1e-6, DD)
+        lo = y0 - math.floor((y0 - dmin) / DD) * DD   # lateral grid through y0
+        d = np.arange(lo, dmax + 1e-6, DD)
         J = len(d)
         j0 = int(round((y0 - lo) / DD))
         n = int((x0 - self.x_end) / DS) + 1
@@ -264,20 +285,21 @@ class FrenetDP:
             else:
                 e[c.min(0) < r_min] = big
             if m.side is not None and xs[i + 1] < ISL_TIP + self.side_ahead:
-                want = LANE_Y[m.side]
+                yo = float(m.yoff(xs[i + 1]))
+                want = LANE_Y[m.side] + yo
                 wc = self.w_centre
                 if ISL_X0 <= xs[i + 1] <= ISL_TIP:
                     # beside the island: the wanted line closer to the island (it went out on
                     # the outer side), held harder than the clearance pad pushing to the middle
                     want += self.island_bias if m.side == 1 else -self.island_bias
                     wc = self.w_centre_island
-                wrong = (d < MID_Y) if m.side == 3 else (d > MID_Y)
+                wrong = (d < MID_Y + yo) if m.side == 3 else (d > MID_Y + yo)
                 e += (self.w_side * wrong + wc * np.abs(d - want))[None, :] * DS
             elif m.side is None and self.w_hedge > 0 and \
                     self.hedge_end < xs[i + 1] < ISL_TIP + self.hedge_ahead:
                 # no sign yet near the island: keep to the middle (lane 2), both roads one
                 # lane away
-                e += (self.w_hedge * np.abs(d - MID_Y))[None, :] * DS
+                e += (self.w_hedge * np.abs(d - MID_Y - float(m.yoff(xs[i + 1]))))[None, :] * DS
             edges.append(e)
         smax = max(int(self.k_hard * DS ** 2 / DD + 1e-6), 1)
         steps = np.arange(-smax, smax + 1)
