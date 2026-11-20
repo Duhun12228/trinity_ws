@@ -22,7 +22,7 @@ cone_node:
     trigger_class: cone
     trigger_conf: 0.5
     trigger_frames: 3
-    enter_dist: 0.5                        # m
+    enter_dist: 0.7                        # m
     bearing_margin_deg: 2.0                # widen the box bearing range a little
     request_timeout: 1.0                   # s
 
@@ -102,7 +102,7 @@ cone_node:
     v_min: 0.25                            # m/s, tight spots
     plan_gap_min: 0.03                     # m, car body to cone base (cone_body_r)
     cone_body_r: 0.08
-    corr_width: 0.60                       # m, cone centres across (bag 07:10: 0.55 .. 0.65)
+    corr_width: 0.65                       # m, cone centres across (bag 07:10: 0.55 .. 0.65)
     centre_offset: -0.04                   # m, follow 4 cm right of the corridor middle (+ left, - right); 2026-11-17 user: left cones too close
     track_gain: 2.3                        # the car turns ~0.5 x the command (3road bags); 2.3 tracks tighter (sim)
     track_lookahead: 0.20

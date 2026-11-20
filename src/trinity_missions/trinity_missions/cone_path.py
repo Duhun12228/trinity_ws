@@ -500,6 +500,17 @@ class ConePathMixin:
             self.no_ahead_since = self.no_ahead_since or now
         else:
             self.no_ahead_since = None
+        # what keeps the exit (log): map cones ahead, lidar clusters in the ROI, camera cone
+        why = []
+        if front.any():
+            f0 = C[front][np.argmin(C[front][:, 0])]
+            why.append(f'map cones ahead {int(front.sum())} (nearest {f0[0]:.2f},{f0[1]:+.2f})')
+        if self.clusters:
+            c0 = min(self.clusters, key=lambda c: c[0])
+            why.append(f'lidar clusters {len(self.clusters)} (nearest {c0[0]:.2f},{c0[1]:+.2f})')
+        if self.cam_cone_at is not None and now - self.cam_cone_at <= self.input_timeout:
+            why.append('camera cone')
+        self.exit_why = ', '.join(why) or 'none (exit)'
         txt = (f'path k {pa["k1"]:+.1f}/{pa["k2"]:+.1f}, gap {gap * 100:.0f} cm'
                f'{"" if pa["clear"] else " (none clear)"}, centre {ahead:.1f} m')
         self.set_phase(PATH, txt)
@@ -513,6 +524,11 @@ class ConePathMixin:
             self.publish(0.0, 0.0)
             return
         cam_gone = self.cam_cone_at is None or now - self.cam_cone_at > self.input_timeout
+        # exit (2026-11-19 user): the current camera frame has no cone box -> DONE (lane follow)
+        if not getattr(self, 'cam_cone_now', True) and now - self.active_since >= 1.0:
+            self.publish(0.0, 0.0)
+            self.finish('no cone in the camera frame: lane follow')
+            return
         # exit: nothing ahead -> into the lane
         if self.phase == ALIGN or (self.no_ahead_since is not None and cam_gone
                                    and now - self.no_ahead_since >= 0.3):

@@ -23,7 +23,7 @@ slow_node:
 
     # 3./4. [slow]: fixed speed for a fixed time
     slow_speed: 0.2                        # m/s
-    slow_duration: 8.0                     # s = slow section length / slow_speed + margin (measure!)
+    slow_duration: 9.0                     # s = slow section length / slow_speed + margin (measure!)
 
     # 5. no re-arming for this long after leaving [slow]
     cooldown: 3.0                          # s

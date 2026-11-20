@@ -20,13 +20,13 @@ master_node:
                            /mission/three_road/state, /mission/parking/state]
     mission_cmd_topics:   [/slow_cmd_vel, /crosswalk_cmd_vel, /cone_cmd_vel, /three_road_cmd_vel,
                            /parking_cmd_vel]
-    mission_max_sec:      [8.0, 0.0, 60.0, 60.0, 60.0]  # s, safety limit in that mode, 0 = none
-                                          # slow: slow_duration 5 s + margin
+    mission_max_sec:      [12.0, 0.0, 60.0, 60.0, 60.0]  # s, safety limit in that mode, 0 = none
+                                          # slow: slow_duration (slow.yaml, 9 s) + margin; raise both together
                                           # crosswalk: none (waits as long as the light is red)
                                           # cone: corridor time + margin
                                           # 3road: lane changes + standing checks, retries
                                           # parking: manoeuvre + hold_sec 30 s + margin
-    preempt_rules: ['crosswalk>slow']     # "A>B": a REQUEST from A interrupts a running B
+    preempt_rules: ['crosswalk>slow', '3road>slow']     # "A>B": a REQUEST from A interrupts a running B (3road>slow 2026-11-20: slow ran 9 s over the 3road entry and the request was not granted)
     block_rules: ['3road>cone']           # "A>B": no B while A is not IDLE or caps the speed
                                           #    (3road: inside the 3-lane section)
     gap_timeout: 0.5                      # s, after entering a mission: /stanley_cmd_vel until its
@@ -37,7 +37,7 @@ master_node:
     # Console dashboard
     color: true                           # ANSI colours
     startup_min_sec: 2.0                  # s, measure rates at least this long before SYSTEM CHECK
-    startup_timeout_sec: 20.0             # s, print SYSTEM CHECK anyway after this (engine load etc.)
+    startup_timeout_sec: 10.0             # s, print SYSTEM CHECK anyway after this (engine load etc.; 20 -> 10)
     status_period_sec: 10.0               # s, one-line summary period (0 = off)
     state_hold_sec: 0.5                   # s, a topic state must hold this long to be printed
 
@@ -51,4 +51,4 @@ master_node:
     monitor_types:  [sensor_msgs/msg/CompressedImage, sensor_msgs/msg/Image,
                      sensor_msgs/msg/Image, vision_msgs/msg/Detection2DArray,
                      geometry_msgs/msg/Twist, sensor_msgs/msg/LaserScan]
-    monitor_min_hz: [15.0, 10.0, 10.0, 10.0, 10.0, 7.0]   # below this -> SLOW
+    monitor_min_hz: [10.0, 10.0, 10.0, 10.0, 10.0, 7.0]   # below this -> SLOW (camera 15 -> 10: it runs ~12.7 Hz, the start check waited the full 20 s)

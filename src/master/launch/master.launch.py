@@ -3,6 +3,10 @@ yolopx_node + lane_follow_node + mission nodes (slow, crosswalk, cone) + master_
 
   ros2 launch master master.launch.py              # master dashboard only on screen
   ros2 launch master master.launch.py quiet:=false # every node's log on screen
+  ros2 launch master master.launch.py model:=practice   # YOLO model for the practice track
+
+model:=venue (default) limo_test_5 (yolopx_mc_v5), model:=practice limo_test_3_v2 (yolopx_mc_v2);
+anything else is taken as an engine path (relative to share/yolopx_line/).
 
 quiet:=true sends yolopx / lane_follow output to ~/.ros/log/latest/<node>-*.log; a crashed
 process is still reported by launch ("process has died").
@@ -17,8 +21,17 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+MODELS = {
+    'venue': 'models/yolopx_mc_v5_480x640_fp16.engine',      # limo_test_5 epoch 40
+    'practice': 'models/yolopx_mc_v2_480x640_fp16.engine',   # limo_test_3_v2
+}
+
+
 def _nodes(context):
     quiet = LaunchConfiguration('quiet').perform(context).lower() in ('true', '1', 'yes')
+    model = LaunchConfiguration('model').perform(context)
+    engine = MODELS.get(model, model)
+    print(f'[master.launch] YOLO model: {model} -> {engine}')
     other_output = 'own_log' if quiet else 'screen'  # own_log: stdout+stderr to a file only
     return [
         Node(
@@ -27,7 +40,8 @@ def _nodes(context):
             name='yolopx_node',
             output=other_output,
             parameters=[LaunchConfiguration('yolopx_params_file'),
-                        {'input_topic': LaunchConfiguration('input_topic')}],
+                        {'input_topic': LaunchConfiguration('input_topic'),
+                         'engine_path': engine}],
         ),
         Node(
             package='mission',
@@ -91,6 +105,9 @@ def generate_launch_description():
     missions_share = get_package_share_directory('trinity_missions')
 
     return LaunchDescription([
+        DeclareLaunchArgument('model', default_value='venue',
+                              description='YOLO model: venue (limo_test_5) / practice '
+                                          '(limo_test_3_v2) / an engine path'),
         DeclareLaunchArgument('quiet', default_value='true',
                               description='true: only the master dashboard on screen'),
         DeclareLaunchArgument(

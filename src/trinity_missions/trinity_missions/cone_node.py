@@ -299,6 +299,7 @@ class ConeNode(ConePathMixin, MissionNode):
                     boxes.append((u0, u1))
         if boxes:
             self.cam_cone_at = now
+        self.cam_cone_now = bool(boxes)   # this frame (path mode exit)
         if self.state != MissionState.IDLE:
             self.trig_count = 0
             return
@@ -716,7 +717,8 @@ def _path_debug(self, now):
     if pa is not None and now - getattr(self, '_plan_log_at', 0.0) >= 0.5:
         self._plan_log_at = now
         self.get_logger().info(f'plan v {pa["v"]:.2f} k {pa["k1"]:+.1f}/{pa["k2"]:+.1f} gap '
-                               f'{pa["gap"] * 100:.0f} cm centre {pa["n_cl"]} pts cones {len(self.cmap)}')
+                               f'{pa["gap"] * 100:.0f} cm centre {pa["n_cl"]} pts cones {len(self.cmap)}'
+                               f' | exit holds: {getattr(self, "exit_why", "-")}')
     if self.pub_debug.get_subscription_count() == 0 or not self.odom_fresh(now):
         return
     arr = MarkerArray()
